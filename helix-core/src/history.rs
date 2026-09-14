@@ -114,6 +114,34 @@ impl History {
         self.current
     }
 
+    /// Add a late completion edit to the just-committed completion, provided
+    /// no intervening undo group was committed. Allocate a new revision so
+    /// saved revision IDs and views observing history remain valid.
+    pub fn append_completion_revision(
+        &mut self,
+        parent: usize,
+        transaction: &Transaction,
+        original: &State,
+    ) -> bool {
+        let current = &self.revisions[self.current];
+        if self.at_root() || current.parent != parent || current.last_child.is_some() {
+            return false;
+        }
+        let revision = Revision {
+            parent,
+            last_child: None,
+            transaction: current.transaction.clone().compose(transaction.clone()),
+            inversion: transaction
+                .invert(&original.doc)
+                .compose(current.inversion.clone()),
+            timestamp: current.timestamp,
+        };
+        self.current = self.revisions.len();
+        self.revisions[parent].last_child = NonZeroUsize::new(self.current);
+        self.revisions.push(revision);
+        true
+    }
+
     #[inline]
     pub const fn at_root(&self) -> bool {
         self.current == 0

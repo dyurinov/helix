@@ -49,6 +49,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         word_index,
         pull_diagnostics,
         pull_all_documents_diagnostics,
+        background_diagnostic_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         code_action_hint,
     };
 

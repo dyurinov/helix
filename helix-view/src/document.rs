@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Error};
 use arc_swap::access::DynAccess;
 use arc_swap::ArcSwap;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, Shared};
 use futures_util::FutureExt;
 use helix_core::auto_pairs::AutoPairs;
 use helix_core::chars::char_is_word;
@@ -130,6 +130,17 @@ pub struct SavePoint {
     revert: Mutex<Transaction>,
 }
 
+pub type CompletionEditFuture = Shared<BoxFuture<'static, Option<Transaction>>>;
+
+struct PendingCompletionEdit {
+    id: u64,
+    future: CompletionEditFuture,
+    snapshot: Rope,
+    savepoint: Arc<SavePoint>,
+    revision: usize,
+    _cancel: TaskController,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentOpenError {
     #[error("path must be a regular file, symlink, or directory")]
@@ -194,6 +205,8 @@ pub struct Document {
     pub config: Arc<dyn DynAccess<Config>>,
 
     savepoints: Vec<Weak<SavePoint>>,
+    pending_completion_edits: Vec<PendingCompletionEdit>,
+    next_completion_edit: u64,
 
     // Last time we wrote to the file. This will carry the time the file was last opened if there
     // were no saves.
@@ -227,7 +240,9 @@ pub struct Document {
     pub document_highlight_controllers: HashMap<ViewId, TaskController>,
     /// Per-view task controllers for canceling in-flight code action requests.
     pub code_action_controllers: HashMap<ViewId, TaskController>,
-    pub pull_diagnostic_controller: TaskController,
+    pub pull_diagnostic_controllers: HashMap<LanguageServerId, TaskController>,
+    /// Queued or running background checks, promoted when the document is shown.
+    pub background_diagnostic_servers: HashSet<LanguageServerId>,
     pub document_link_controller: TaskController,
 
     // NOTE: this field should eventually go away - we should use the Editor's syn_loader instead
@@ -755,6 +770,8 @@ impl Document {
             version: 0,
             history: Cell::new(History::default()),
             savepoints: Vec::new(),
+            pending_completion_edits: Vec::new(),
+            next_completion_edit: 0,
             last_saved_time: SystemTime::now(),
             last_saved_revision: 0,
             modified_since_accessed: false,
@@ -774,7 +791,8 @@ impl Document {
             code_action_controllers: HashMap::new(),
             syn_loader,
             previous_diagnostic_ids: HashMap::new(),
-            pull_diagnostic_controller: TaskController::new(),
+            pull_diagnostic_controllers: HashMap::new(),
+            background_diagnostic_servers: HashSet::new(),
             document_link_controller: TaskController::new(),
         }
     }
@@ -1300,6 +1318,8 @@ impl Document {
         let mut file = std::fs::File::open(&path)?;
         let (rope, ..) = from_reader(&mut file, Some(encoding))?;
 
+        self.pending_completion_edits.clear();
+
         // Calculate the difference between the buffer and source text, and apply it.
         // This is not considered a modification of the contents of the file regardless
         // of the encoding.
@@ -1679,6 +1699,128 @@ impl Document {
         self.apply_inner(transaction, view_id, false)
     }
 
+    /// Register additional completion edits against the document before the
+    /// primary insertion. Savepoints track intervening typing without copying
+    /// a new snapshot on every keystroke.
+    pub fn defer_completion_edits(
+        &mut self,
+        view: &View,
+        future: CompletionEditFuture,
+    ) -> (u64, helix_event::TaskHandle) {
+        let id = self.next_completion_edit;
+        self.next_completion_edit += 1;
+        let savepoint = self.savepoint(view);
+        let mut cancel = TaskController::new();
+        let handle = cancel.restart();
+        self.pending_completion_edits.push(PendingCompletionEdit {
+            id,
+            future,
+            snapshot: self.text.clone(),
+            savepoint,
+            revision: self.history.get_mut().current_revision(),
+            _cancel: cancel,
+        });
+        (id, handle)
+    }
+
+    pub fn has_pending_completion_edit(&self, id: u64) -> bool {
+        self.pending_completion_edits
+            .iter()
+            .any(|edit| edit.id == id)
+    }
+
+    /// Apply resolved imports only to their original buffer, mapping positions
+    /// through intervening edits and refusing to overwrite changed text.
+    pub fn finish_completion_edits(
+        &mut self,
+        id: u64,
+        transaction: Option<Transaction>,
+        view: &mut View,
+    ) -> anyhow::Result<()> {
+        let Some(index) = self
+            .pending_completion_edits
+            .iter()
+            .position(|edit| edit.id == id)
+        else {
+            return Ok(());
+        };
+        let pending = self.pending_completion_edits.remove(index);
+        let Some(transaction) = transaction.filter(|tx| !tx.changes().is_empty()) else {
+            return Ok(());
+        };
+        let changes = pending
+            .savepoint
+            .revert
+            .lock()
+            .changes()
+            .invert(self.text());
+        let mut edits = Vec::new();
+        for (from, to, text) in transaction.changes_iter() {
+            let start = changes.map_pos(
+                from,
+                if from == to {
+                    helix_core::Assoc::Before
+                } else {
+                    helix_core::Assoc::After
+                },
+            );
+            let end = if from == to {
+                start
+            } else {
+                changes.map_pos(to, helix_core::Assoc::Before)
+            };
+            if start > end || pending.snapshot.slice(from..to) != self.text.slice(start..end) {
+                bail!("Completion imports overlap newer edits; apply the import manually");
+            }
+            // Two accepted items may resolve to the same import before either
+            // response arrives. Do not insert it twice at the same location.
+            if from == to
+                && text.as_ref().is_some_and(|text| {
+                    self.text
+                        .slice(start..)
+                        .chars()
+                        .take(text.chars().count())
+                        .eq(text.chars())
+                })
+            {
+                continue;
+            }
+            edits.push((start, end, text));
+        }
+        let transaction = Transaction::change(self.text(), edits.into_iter());
+        if transaction.changes().is_empty() {
+            return Ok(());
+        }
+        let own_undo_group = self.changes.is_empty();
+        self.apply(&transaction, view.id);
+        if own_undo_group {
+            let changes = std::mem::replace(&mut self.changes, ChangeSet::new(self.text.slice(..)));
+            let transaction =
+                Transaction::from(changes).with_selection(self.selection(view.id).clone());
+            let original = self
+                .old_state
+                .take()
+                .expect("completion edit has an original state");
+            let history = self.history.get_mut();
+            if !history.append_completion_revision(pending.revision, &transaction, &original) {
+                history.commit_revision(&transaction, &original);
+            }
+            view.apply(&transaction, self);
+        }
+        Ok(())
+    }
+
+    /// Saving must include imports even when acceptance raced the resolver.
+    /// Await the shared results directly rather than waiting for UI callbacks.
+    pub async fn flush_completion_edits(&mut self, view: &mut View) -> anyhow::Result<()> {
+        while let Some(pending) = self.pending_completion_edits.first() {
+            let id = pending.id;
+            let transaction = pending.future.clone().await;
+            self.finish_completion_edits(id, transaction, view)?;
+        }
+        Ok(())
+    }
+
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
         if undo {
             self.append_changes_to_history(view);
@@ -1688,6 +1830,7 @@ impl Document {
         let mut history = self.history.take();
         let txn = if undo { history.undo() } else { history.redo() };
         let success = if let Some(txn) = txn {
+            self.pending_completion_edits.clear();
             self.apply_impl(txn, view.id, true)
         } else {
             false
@@ -1777,6 +1920,7 @@ impl Document {
         };
         let mut success = false;
         for txn in txns {
+            self.pending_completion_edits.clear();
             if self.apply_impl(&txn, view.id, true) {
                 success = true;
             }

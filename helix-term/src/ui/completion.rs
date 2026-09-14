@@ -6,6 +6,7 @@ use crate::{
         trigger_auto_completion, CompletionItem, CompletionResponse, ResolveHandler,
     },
 };
+use futures_util::FutureExt;
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
 use helix_lsp::{lsp, util, OffsetEncoding};
@@ -135,6 +136,8 @@ impl Completion {
 
         let dir_style = editor.theme.get("ui.text.directory");
 
+        let resolve_handler = ResolveHandler::new();
+        let accept_resolver = resolve_handler.clone();
         // Then create the menu
         let menu = Menu::new(items, dir_style, move |editor: &mut Editor, item, event| {
             let (view, doc) = current!(editor);
@@ -213,22 +216,39 @@ impl Completion {
                     // save an undo checkpoint before the completion
                     doc.append_changes_to_history(view);
 
+                    let mut pending_resolve = None;
                     // item always present here
                     let (transaction, additional_edits, snippet) = match item.clone() {
-                        CompletionItem::Lsp(mut item) => {
+                        CompletionItem::Lsp(item) => {
                             let language_server = language_server!(item);
 
-                            // resolve item if not yet resolved
-                            if !item.resolved {
-                                if let Some(resolved_item) = Self::resolve_completion_item(
-                                    language_server,
-                                    item.item.clone(),
-                                ) {
-                                    item.item = resolved_item;
-                                }
-                            };
-
                             let encoding = language_server.offset_encoding();
+                            // Only additional edits may change on resolve (besides docs
+                            // and detail). Primary insertion and snippets are immediately usable.
+                            if item
+                                .item
+                                .additional_text_edits
+                                .as_ref()
+                                .is_none_or(Vec::is_empty)
+                            {
+                                if let Some(resolve) =
+                                    accept_resolver.resolve_now(&item, language_server.clone())
+                                {
+                                    let snapshot = doc.text().clone();
+                                    let future = async move {
+                                        let edits = resolve.await?.additional_text_edits?;
+                                        Some(util::generate_transaction_from_edits(
+                                            &snapshot, edits, encoding,
+                                        ))
+                                    }
+                                    .boxed()
+                                    .shared();
+                                    let (id, cancel) =
+                                        doc.defer_completion_edits(view, future.clone());
+                                    pending_resolve = Some((id, future, cancel));
+                                }
+                            }
+
                             let (transaction, snippet) = lsp_item_to_transaction(
                                 doc,
                                 view.id,
@@ -276,6 +296,46 @@ impl Completion {
                             doc.apply(&transaction, view.id);
                         }
                     }
+                    if let Some((id, future, cancel)) = pending_resolve {
+                        let doc_id = doc.id();
+                        tokio::spawn(async move {
+                            let Some(transaction) =
+                                helix_event::cancelable_future(future, cancel).await
+                            else {
+                                return;
+                            };
+                            crate::job::dispatch(move |editor, compositor| {
+                                if !editor
+                                    .documents
+                                    .get(&doc_id)
+                                    .is_some_and(|doc| doc.has_pending_completion_edit(id))
+                                {
+                                    return;
+                                }
+                                if transaction
+                                    .as_ref()
+                                    .is_some_and(|tx| !tx.changes().is_empty())
+                                    && current_ref!(editor).1.id() == doc_id
+                                {
+                                    // An import moves completion offsets. Restore any ghost
+                                    // preview before editing and discard the now-stale popup.
+                                    let editor_view =
+                                        compositor.find::<crate::ui::EditorView>().unwrap();
+                                    if editor_view.completion.is_some() {
+                                        editor_view.clear_completion(editor);
+                                    }
+                                }
+                                let view_id = editor.get_synced_view_id(doc_id);
+                                let view = view_mut!(editor, view_id);
+                                let doc = doc_mut!(editor, &doc_id);
+                                if let Err(err) = doc.finish_completion_edits(id, transaction, view)
+                                {
+                                    editor.set_error(err.to_string());
+                                }
+                            })
+                            .await;
+                        });
+                    }
                     // we could have just inserted a trigger char (like a `crate::` completion for rust
                     // so we want to retrigger immediately when accepting a completion.
                     trigger_auto_completion(editor, true);
@@ -311,7 +371,7 @@ impl Completion {
             // TODO: expand nucleo api to allow moving straight to a Utf32String here
             // and avoid allocation during matching
             filter: String::from(fragment),
-            resolve_handler: ResolveHandler::new(),
+            resolve_handler,
         };
 
         // need to recompute immediately in case start_offset != trigger_offset
@@ -377,32 +437,6 @@ impl Completion {
                 i,
             )
         });
-    }
-
-    /// Synchronously resolve the given completion item. This is used when
-    /// accepting a completion.
-    fn resolve_completion_item(
-        language_server: &helix_lsp::Client,
-        completion_item: lsp::CompletionItem,
-    ) -> Option<lsp::CompletionItem> {
-        if !matches!(
-            language_server.capabilities().completion_provider,
-            Some(lsp::CompletionOptions {
-                resolve_provider: Some(true),
-                ..
-            })
-        ) {
-            return None;
-        }
-        let future = language_server.resolve_completion_item(&completion_item);
-        let response = helix_lsp::block_on(future);
-        match response {
-            Ok(item) => Some(item),
-            Err(err) => {
-                log::error!("Failed to resolve completion item: {}", err);
-                None
-            }
-        }
     }
 
     /// Appends (`c: Some(c)`) or removes (`c: None`) a character to/from the filter

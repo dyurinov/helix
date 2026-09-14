@@ -382,6 +382,8 @@ fn write_impl(
     path: Option<&str>,
     options: WriteOptions,
 ) -> anyhow::Result<()> {
+    let doc_id = doc!(cx.editor).id();
+    flush_completion_edits(cx.editor, doc_id)?;
     let config = cx.editor.config();
     let (view, doc) = current!(cx.editor);
     let doc_id = doc.id();
@@ -460,6 +462,13 @@ fn write_impl(
     }
 
     Ok(())
+}
+
+fn flush_completion_edits(editor: &mut Editor, doc_id: DocumentId) -> anyhow::Result<()> {
+    let view_id = editor.get_synced_view_id(doc_id);
+    let view = view_mut!(editor, view_id);
+    let doc = doc_mut!(editor, &doc_id);
+    tokio::task::block_in_place(|| helix_lsp::block_on(doc.flush_completion_edits(view)))
 }
 
 /// Trim all whitespace preceding line-endings in a document.
@@ -861,6 +870,9 @@ pub fn write_all_impl(
     cx: &mut compositor::Context,
     options: WriteAllOptions,
 ) -> anyhow::Result<()> {
+    for doc_id in cx.editor.documents.keys().copied().collect::<Vec<_>>() {
+        flush_completion_edits(cx.editor, doc_id)?;
+    }
     let mut errors: Vec<&'static str> = Vec::new();
     let config = cx.editor.config();
     let saves: Vec<_> = cx
@@ -2649,10 +2661,85 @@ fn pipe_impl(
     Ok(())
 }
 
+fn write_and_run(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    write_and_run_impl(cx, args, event, false, None)
+}
+
+fn write_all_and_run(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    write_and_run_impl(cx, args, event, true, None)
+}
+
+fn write_and_run_impl(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+    all: bool,
+    toast: Option<&CommandToast>,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if all {
+        write_all_impl(
+            cx,
+            WriteAllOptions {
+                force: false,
+                write_scratch: true,
+                auto_format: true,
+                code_actions: true,
+            },
+        )?;
+    } else {
+        ensure!(
+            doc!(cx.editor).path().is_some(),
+            "Cannot run command: current buffer has no filename"
+        );
+        write_impl(
+            cx,
+            None,
+            WriteOptions {
+                force: false,
+                auto_format: true,
+                code_actions: true,
+            },
+        )?;
+    }
+    // Drain save-action/format followups and disk writes before starting the shell.
+    cx.block_try_flush_writes()?;
+    // Some save callbacks report errors through the status line instead of returning them.
+    if all {
+        buffers_remaining_impl(cx.editor)?;
+    } else {
+        ensure!(
+            !doc!(cx.editor).is_modified(),
+            "Cannot run command: current buffer was not saved"
+        );
+    }
+    run_shell_command_with_toast(cx, args, event, toast)
+}
+
 fn run_shell_command(
     cx: &mut compositor::Context,
     args: Args,
     event: PromptEvent,
+) -> anyhow::Result<()> {
+    run_shell_command_with_toast(cx, args, event, None)
+}
+
+fn run_shell_command_with_toast(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+    toast: Option<&CommandToast>,
 ) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -2660,14 +2747,44 @@ fn run_shell_command(
 
     let shell = cx.editor.config().shell.clone();
     let args = args.join(" ");
+    let toast = toast.cloned();
+    if let Some(start) = toast.as_ref().and_then(|toast| toast.start.as_ref()) {
+        cx.editor.set_status(start.clone());
+    }
 
     let callback = async move {
-        let output = shell_impl_async(&shell, &args, None).await?;
+        let (success, details, status) = match shell_output_async(&shell, &args, None).await {
+            Ok(output) => {
+                let success = output.status.success();
+                let status = if success {
+                    "Command run".to_string()
+                } else {
+                    format!("Shell command failed ({})", output.status)
+                };
+                let mut details = String::from_utf8_lossy(&output.stdout).into_owned();
+                if !output.stderr.is_empty() {
+                    if !details.is_empty() && !details.ends_with('\n') {
+                        details.push('\n');
+                    }
+                    details.push_str(&String::from_utf8_lossy(&output.stderr));
+                }
+                if !success {
+                    details = format!("{status}\n\n{details}");
+                }
+                (success, details, status)
+            }
+            Err(err) => {
+                let status = format!("Shell command failed: {err}");
+                (false, status.clone(), status)
+            }
+        };
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
-                if !output.trim().is_empty() {
+                // Custom success notifications replace the output popup. Failures
+                // retain both streams and their exit status for troubleshooting.
+                if (!success || toast.is_none()) && !details.trim().is_empty() {
                     let contents = ui::Markdown::new(
-                        format!("```sh\n{}\n```", output.trim_end()),
+                        format!("```sh\n{}\n```", details.trim_end()),
                         editor.syn_loader.clone(),
                     );
                     let popup = Popup::new("shell", contents).position(Some(
@@ -2675,7 +2792,11 @@ fn run_shell_command(
                     ));
                     compositor.replace_or_push("shell", popup);
                 }
-                editor.set_status("Command run");
+                if success {
+                    editor.set_status(toast.map_or(status, |toast| toast.success));
+                } else {
+                    editor.set_error(toast.map_or(status, |toast| toast.failure));
+                }
             },
         ));
         Ok(call)
@@ -3975,6 +4096,22 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: SHELL_SIGNATURE,
     },
     TypableCommand {
+        name: "write-and-run",
+        aliases: &[],
+        doc: "Save the current buffer, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails.",
+        fun: write_and_run,
+        completer: SHELL_COMPLETER,
+        signature: SHELL_SIGNATURE,
+    },
+    TypableCommand {
+        name: "write-all-and-run",
+        aliases: &[],
+        doc: "Save all modified buffers, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails.",
+        fun: write_all_and_run,
+        completer: SHELL_COMPLETER,
+        signature: SHELL_SIGNATURE,
+    },
+    TypableCommand {
         name: "reset-diff-change",
         aliases: &["diffget", "diffg"],
         doc: "Reset the diff change at the cursor position.",
@@ -4126,10 +4263,23 @@ fn execute_command_line(
     cx: &mut compositor::Context,
     input: &str,
     event: PromptEvent,
+    named_commands: &HashMap<String, MappableCommand>,
 ) -> anyhow::Result<()> {
     let (command, rest, _) = command_line::split(input);
     if command.is_empty() {
         return Ok(());
+    }
+
+    if let Some(binding) = named_commands.get(command) {
+        // Merely typing or dismissing the prompt must not start a task.
+        if event != PromptEvent::Validate {
+            return Ok(());
+        }
+        ensure!(
+            rest.trim().is_empty(),
+            "'{command}' does not take arguments"
+        );
+        return binding.execute_typable(cx, event);
     }
 
     // If command is numeric, interpret as line number and go there.
@@ -4151,6 +4301,23 @@ pub(super) fn execute_command(
     args: &str,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
+    execute_command_with_toast(cx, cmd, args, event, None)
+}
+
+pub(crate) fn supports_command_toast(name: &str) -> bool {
+    matches!(
+        name,
+        "run-shell-command" | "write-and-run" | "write-all-and-run"
+    )
+}
+
+pub(super) fn execute_command_with_toast(
+    cx: &mut compositor::Context,
+    cmd: &TypableCommand,
+    args: &str,
+    event: PromptEvent,
+    toast: Option<&CommandToast>,
+) -> anyhow::Result<()> {
     let args = if event == PromptEvent::Validate {
         Args::parse(args, cmd.signature, true, |token| {
             expansion::expand(cx.editor, token).map_err(|err| err.into())
@@ -4161,26 +4328,55 @@ pub(super) fn execute_command(
             .expect("arg parsing cannot fail when validation is turned off")
     };
 
-    (cmd.fun)(cx, args, event).map_err(|err| anyhow!("'{}': {err}", cmd.name))
+    let result = if toast.is_some() {
+        match cmd.name {
+            "run-shell-command" => run_shell_command_with_toast(cx, args, event, toast),
+            "write-and-run" => write_and_run_impl(cx, args, event, false, toast),
+            "write-all-and-run" => write_and_run_impl(cx, args, event, true, toast),
+            _ => bail!("'{}' does not support command toasts", cmd.name),
+        }
+    } else {
+        (cmd.fun)(cx, args, event)
+    };
+    result.map_err(|err| anyhow!("'{}': {err}", cmd.name))
 }
 
 #[allow(clippy::unnecessary_unwrap)]
 pub(super) fn command_mode(cx: &mut Context) {
-    let mut prompt = Prompt::new(
-        ":".into(),
-        Some(':'),
-        complete_command_line,
-        move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
-            if let Err(err) = execute_command_line(cx, input, event) {
+    cx.callback.push(Box::new(|compositor, cx| {
+        let keys = compositor.find::<ui::EditorView>().unwrap().keymaps.map();
+        let named_commands = match crate::keymap::named_commands(&keys) {
+            Ok(commands) => Arc::new(commands),
+            Err(err) => {
                 cx.editor.set_error(err.to_string());
+                return;
             }
-        },
-    );
-    prompt.doc_fn = Box::new(command_line_doc);
+        };
+        drop(keys);
+        let completion_commands = named_commands.clone();
+        let execution_commands = named_commands.clone();
+        let mut prompt = Prompt::new(
+            ":".into(),
+            Some(':'),
+            move |editor, input| complete_command_line(editor, input, &completion_commands),
+            move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+                if let Err(err) = execute_command_line(cx, input, event, &execution_commands) {
+                    cx.editor.set_error(err.to_string());
+                }
+            },
+        );
+        prompt.doc_fn = Box::new(move |input| {
+            let (command, _, _) = command_line::split(input);
+            match named_commands.get(command) {
+                Some(binding) => Some(Cow::Owned(binding.doc().to_owned())),
+                None => command_line_doc(input),
+            }
+        });
 
-    // Calculate initial completion
-    prompt.recalculate_completion(cx.editor);
-    cx.push_layer(Box::new(prompt));
+        // Calculate initial completion from the currently loaded configuration.
+        prompt.recalculate_completion(cx.editor);
+        compositor.push(Box::new(prompt));
+    }));
 }
 
 fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
@@ -4255,17 +4451,24 @@ fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
     Some(Cow::Owned(doc))
 }
 
-fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Completion> {
+fn complete_command_line(
+    editor: &Editor,
+    input: &str,
+    named_commands: &HashMap<String, MappableCommand>,
+) -> Vec<ui::prompt::Completion> {
     let (command, rest, complete_command) = command_line::split(input);
 
     if complete_command {
         fuzzy_match(
             input,
-            TYPABLE_COMMAND_LIST.iter().map(|command| command.name),
+            TYPABLE_COMMAND_LIST
+                .iter()
+                .map(|command| command.name)
+                .chain(named_commands.keys().map(String::as_str)),
             false,
         )
         .into_iter()
-        .map(|(name, _)| (0.., name.into()))
+        .map(|(name, _)| (0.., name.to_owned().into()))
         .collect()
     } else {
         TYPABLE_COMMAND_MAP

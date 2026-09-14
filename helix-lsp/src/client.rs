@@ -52,6 +52,56 @@ fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
     }
 }
 
+/// Lives outside the async body so dropping an unpolled request also cleans up.
+struct RequestGuard {
+    id: Option<jsonrpc::Id>,
+    sender: UnboundedSender<Payload>,
+    cancel: bool,
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = self.sender.send(Payload::CancelRequest {
+                id,
+                notify_server: self.cancel,
+            });
+        }
+    }
+}
+
+fn can_cancel_request(method: &str) -> bool {
+    // These requests compute results for the client. Lifecycle requests and
+    // workspace/executeCommand must still run if their caller stops waiting.
+    matches!(
+        method,
+        "textDocument/completion"
+            | "completionItem/resolve"
+            | "textDocument/diagnostic"
+            | "textDocument/hover"
+            | "textDocument/signatureHelp"
+            | "textDocument/inlayHint"
+            | "textDocument/documentHighlight"
+            | "textDocument/documentColor"
+            | "textDocument/documentLink"
+            | "documentLink/resolve"
+            | "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/typeDefinition"
+            | "textDocument/implementation"
+            | "textDocument/references"
+            | "textDocument/documentSymbol"
+            | "workspace/symbol"
+            | "textDocument/codeAction"
+            | "codeAction/resolve"
+            | "textDocument/formatting"
+            | "textDocument/rangeFormatting"
+            | "textDocument/prepareCallHierarchy"
+            | "callHierarchy/incomingCalls"
+            | "callHierarchy/outgoingCalls"
+    )
+}
+
 #[derive(Debug)]
 pub struct Client {
     id: LanguageServerId,
@@ -70,6 +120,7 @@ pub struct Client {
     shutdown_flushed: Arc<Notify>,
     /// workspace folders added while the server is still initializing
     req_timeout: u64,
+    full_sync_debounce: u64,
 }
 
 impl Client {
@@ -218,6 +269,7 @@ impl Client {
         id: LanguageServerId,
         name: String,
         req_timeout: u64,
+        full_sync_debounce: u64,
     ) -> Result<(
         Self,
         UnboundedReceiver<(LanguageServerId, Call)>,
@@ -263,6 +315,7 @@ impl Client {
             file_operation_interest: OnceLock::new(),
             config,
             req_timeout,
+            full_sync_debounce,
             root_path,
             root_uri,
             workspace_folders: Mutex::new(workspace_folders),
@@ -489,15 +542,23 @@ impl Client {
                 Ok(rx)
             });
 
+        let guard = RequestGuard {
+            id: rx.as_ref().ok().map(|_| id.clone()),
+            sender: server_tx,
+            cancel: can_cancel_request(R::METHOD),
+        };
+
         async move {
+            let mut guard = guard;
             use std::time::Duration;
             use tokio::time::timeout;
             // TODO: delay other calls until initialize success
-            timeout(Duration::from_secs(timeout_secs), rx?.recv())
+            let result = timeout(Duration::from_secs(timeout_secs), rx?.recv())
                 .await
                 .map_err(|_| Error::Timeout(id))? // return Timeout
-                .ok_or(Error::StreamClosed)?
-                .and_then(|value| serde_json::from_value(value).map_err(Into::into))
+                .ok_or(Error::StreamClosed)?;
+            guard.id = None;
+            result.and_then(|value| serde_json::from_value(value).map_err(Into::into))
         }
     }
 
@@ -569,7 +630,11 @@ impl Client {
     // General messages
     // -------------------------------------------------------------------------------------------
 
-    pub(crate) async fn initialize(&self, enable_snippets: bool) -> Result<lsp::InitializeResult> {
+    pub(crate) async fn initialize(
+        &self,
+        enable_snippets: bool,
+        client_file_watching: bool,
+    ) -> Result<lsp::InitializeResult> {
         if let Some(config) = &self.config {
             log::info!("Using custom LSP config: {}", config);
         }
@@ -616,8 +681,8 @@ impl Client {
                         change_annotation_support: None,
                     }),
                     did_change_watched_files: Some(lsp::DidChangeWatchedFilesClientCapabilities {
-                        dynamic_registration: Some(true),
-                        relative_pattern_support: Some(true),
+                        dynamic_registration: Some(client_file_watching),
+                        relative_pattern_support: Some(client_file_watching),
                     }),
                     file_operations: Some(lsp::WorkspaceFileOperationsClientCapabilities {
                         will_create: Some(true),
@@ -1116,10 +1181,18 @@ impl Client {
             kind => unimplemented!("{:?}", kind),
         };
 
-        self.notify::<lsp::notification::DidChangeTextDocument>(lsp::DidChangeTextDocumentParams {
+        let params = lsp::DidChangeTextDocumentParams {
             text_document,
             content_changes: changes,
-        });
+        };
+        if sync_capabilities == lsp::TextDocumentSyncKind::FULL && self.full_sync_debounce != 0 {
+            let _ = self.server_tx.send(Payload::FullDocumentChange {
+                params,
+                debounce: std::time::Duration::from_millis(self.full_sync_debounce),
+            });
+        } else {
+            self.notify::<lsp::notification::DidChangeTextDocument>(params);
+        }
         Some(())
     }
 

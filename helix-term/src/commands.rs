@@ -84,6 +84,7 @@ use std::{
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use helix_stdx::Url;
@@ -216,6 +217,8 @@ pub enum MappableCommand {
         name: String,
         args: String,
         doc: String,
+        toast: Option<Arc<CommandToast>>,
+        alias: Option<String>,
     },
     Static {
         name: &'static str,
@@ -226,6 +229,15 @@ pub enum MappableCommand {
         name: String,
         keys: Vec<KeyEvent>,
     },
+}
+
+/// Status-line notifications for a custom shell command binding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandToast {
+    pub start: Option<String>,
+    pub success: String,
+    pub failure: String,
 }
 
 macro_rules! static_commands {
@@ -248,20 +260,14 @@ macro_rules! static_commands {
 impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
-            Self::Typable { name, args, doc: _ } => {
-                if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
-                    let mut cx = compositor::Context {
-                        editor: cx.editor,
-                        jobs: cx.jobs,
-                        scroll: None,
-                    };
-                    if let Err(e) =
-                        typed::execute_command(&mut cx, command, args, PromptEvent::Validate)
-                    {
-                        cx.editor.set_error(format!("{}", e));
-                    }
-                } else {
-                    cx.editor.set_error(format!("no such command: '{name}'"));
+            Self::Typable { .. } => {
+                let mut cx = compositor::Context {
+                    editor: cx.editor,
+                    jobs: cx.jobs,
+                    scroll: None,
+                };
+                if let Err(err) = self.execute_typable(&mut cx, PromptEvent::Validate) {
+                    cx.editor.set_error(err.to_string());
                 }
             }
             Self::Static { fun, .. } => (fun)(cx),
@@ -283,6 +289,28 @@ impl MappableCommand {
                 }));
             }
         }
+    }
+
+    fn execute_typable(
+        &self,
+        cx: &mut compositor::Context,
+        event: PromptEvent,
+    ) -> anyhow::Result<()> {
+        let Self::Typable {
+            name, args, toast, ..
+        } = self
+        else {
+            bail!("Expected a typable command");
+        };
+        let command = typed::TYPABLE_COMMAND_MAP
+            .get(name.as_str())
+            .ok_or_else(|| anyhow!("no such command: '{name}'"))?;
+        typed::execute_command_with_toast(cx, command, args, event, toast.as_deref()).map_err(
+            |err| match toast {
+                Some(toast) => anyhow!("{}: {err}", toast.failure),
+                None => err,
+            },
+        )
     }
 
     pub fn name(&self) -> &str {
@@ -664,6 +692,8 @@ impl std::str::FromStr for MappableCommand {
                         name: cmd.name.to_owned(),
                         doc,
                         args: args.to_string(),
+                        toast: None,
+                        alias: None,
                     }
                 })
                 .ok_or_else(|| anyhow!("No TypableCommand named '{}'", s))
@@ -699,14 +729,23 @@ impl PartialEq for MappableCommand {
                 MappableCommand::Typable {
                     name: first_name,
                     args: first_args,
+                    toast: first_toast,
+                    alias: first_alias,
                     ..
                 },
                 MappableCommand::Typable {
                     name: second_name,
                     args: second_args,
+                    toast: second_toast,
+                    alias: second_alias,
                     ..
                 },
-            ) => first_name == second_name && first_args == second_args,
+            ) => {
+                first_name == second_name
+                    && first_args == second_args
+                    && first_toast == second_toast
+                    && first_alias == second_alias
+            }
             (
                 MappableCommand::Static {
                     name: first_name, ..
@@ -3598,6 +3637,8 @@ pub fn command_palette(cx: &mut Context) {
                         name: cmd.name.to_owned(),
                         args: String::new(),
                         doc: cmd.doc.to_owned(),
+                        toast: None,
+                        alias: None,
                     }),
             );
 
@@ -6590,6 +6631,33 @@ async fn shell_impl_async(
     cmd: &str,
     input: Option<Rope>,
 ) -> anyhow::Result<Tendril> {
+    let output = shell_output_async(shell, cmd, input).await?;
+    let output = if !output.status.success() {
+        if output.stderr.is_empty() {
+            match output.status.code() {
+                Some(exit_code) => bail!("Shell command failed: status {}", exit_code),
+                None => bail!("Shell command failed"),
+            }
+        }
+        String::from_utf8_lossy(&output.stderr)
+        // Prioritize `stderr` output over `stdout`
+    } else if !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!("Command printed to stderr: {stderr}");
+        stderr
+    } else {
+        String::from_utf8_lossy(&output.stdout)
+    };
+
+    Ok(Tendril::from(output))
+}
+
+/// Preserve the exit status and both output streams for command result reporting.
+async fn shell_output_async(
+    shell: &[String],
+    cmd: &str,
+    input: Option<Rope>,
+) -> anyhow::Result<std::process::Output> {
     use std::process::Stdio;
     use tokio::process::Command;
     ensure!(!shell.is_empty(), "No shell set");
@@ -6632,24 +6700,7 @@ async fn shell_impl_async(
         process.wait_with_output().await?
     };
 
-    let output = if !output.status.success() {
-        if output.stderr.is_empty() {
-            match output.status.code() {
-                Some(exit_code) => bail!("Shell command failed: status {}", exit_code),
-                None => bail!("Shell command failed"),
-            }
-        }
-        String::from_utf8_lossy(&output.stderr)
-        // Prioritize `stderr` output over `stdout`
-    } else if !output.stderr.is_empty() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::debug!("Command printed to stderr: {stderr}");
-        stderr
-    } else {
-        String::from_utf8_lossy(&output.stdout)
-    };
-
-    Ok(Tendril::from(output))
+    Ok(output)
 }
 
 fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {

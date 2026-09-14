@@ -446,6 +446,14 @@ pub struct LanguageServerConfiguration {
     pub config: Option<serde_json::Value>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
+    /// Advertise client-side file watching. Disable for servers with a native
+    /// watcher when editor-originated file notifications are insufficient.
+    #[serde(default = "default_client_file_watching")]
+    pub client_file_watching: bool,
+    /// Coalesce full-document changes for this many milliseconds. Incremental
+    /// changes and servers without an explicit opt-in are sent immediately.
+    #[serde(default)]
+    pub full_sync_debounce: u64,
     #[serde(default)]
     pub required_root_patterns: Option<GlobSet>,
 }
@@ -652,4 +660,22 @@ where
 
 fn default_timeout() -> u64 {
     20
+}
+
+fn default_client_file_watching() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod language_server_configuration_tests {
+    use super::LanguageServerConfiguration;
+
+    #[test]
+    fn client_watching_is_opt_out_per_server() {
+        let default: LanguageServerConfiguration = toml::from_str("command = 'server'").unwrap();
+        assert!(default.client_file_watching);
+        let native: LanguageServerConfiguration =
+            toml::from_str("command = 'server'\nclient-file-watching = false").unwrap();
+        assert!(!native.client_file_watching);
+    }
 }

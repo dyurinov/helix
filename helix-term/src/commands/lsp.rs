@@ -602,7 +602,6 @@ pub fn code_action(cx: &mut Context) {
 
     let mut futures: FuturesUnordered<_> =
         code_actions_for_range(doc, selection_range, None, CodeActionTriggerKind::INVOKED)
-            .into_iter()
             .map(|(request, ls_id)| async move {
                 let Some(mut actions) = request.await? else {
                     return anyhow::Ok(Vec::new());
@@ -676,16 +675,18 @@ pub(crate) fn code_actions_for_range(
     range: helix_core::Range,
     only: Option<Vec<CodeActionKind>>,
     trigger_kind: CodeActionTriggerKind,
-) -> Vec<(
-    impl Future<Output = Result<Option<Vec<CodeActionOrCommand>>, helix_lsp::Error>>,
-    LanguageServerId,
-)> {
+) -> impl Iterator<
+    Item = (
+        impl Future<Output = Result<Option<Vec<CodeActionOrCommand>>, helix_lsp::Error>>,
+        LanguageServerId,
+    ),
+> + '_ {
     let mut seen_language_servers = HashSet::new();
 
     doc.language_servers_with_feature(LanguageServerFeature::CodeAction)
-        .filter(|ls| seen_language_servers.insert(ls.id()))
+        .filter(move |ls| seen_language_servers.insert(ls.id()))
         // TODO this should probably already been filtered in something like "language_servers_with_feature"
-        .filter_map(|language_server| {
+        .filter_map(move |language_server| {
             let offset_encoding = language_server.offset_encoding();
             let language_server_id = language_server.id();
             let lsp_range = range_to_lsp_range(doc.text(), range, offset_encoding);
@@ -706,7 +707,6 @@ pub(crate) fn code_actions_for_range(
                 language_server.code_actions(doc.identifier(), lsp_range, code_action_context)?;
             Some((code_action_request, language_server_id))
         })
-        .collect::<Vec<_>>()
 }
 
 /// Build the job chain that runs a document's configured `code-actions-on-save`
@@ -756,7 +756,6 @@ fn code_action_on_save_step(
             Some(vec![kind.clone()]),
             CodeActionTriggerKind::INVOKED,
         )
-        .into_iter()
         .next() else {
             // No server offers this kind for the document: skip to the next.
             return code_action_on_save_step(doc_id, kinds, tail);

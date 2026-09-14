@@ -26,7 +26,15 @@ pub enum Payload {
         value: jsonrpc::MethodCall,
     },
     Notification(jsonrpc::Notification),
+    FullDocumentChange {
+        params: lsp::DidChangeTextDocumentParams,
+        debounce: std::time::Duration,
+    },
     Response(jsonrpc::Output),
+    CancelRequest {
+        id: jsonrpc::Id,
+        notify_server: bool,
+    },
 }
 
 /// A type representing all possible values sent from the server to the client.
@@ -185,7 +193,32 @@ impl Transport {
                 serde_json::to_string(&value)?
             }
             Payload::Notification(value) => serde_json::to_string(&value)?,
+            Payload::FullDocumentChange { params, .. } => {
+                serde_json::to_string(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": lsp::notification::DidChangeTextDocument::METHOD,
+                    "params": params,
+                }))?
+            }
             Payload::Response(error) => serde_json::to_string(&error)?,
+            Payload::CancelRequest { id, notify_server } => {
+                let pending = self.pending_requests.lock().await.remove(&id);
+                if pending.is_none()
+                    || !notify_server
+                    || self.shutdown_requested.load(Ordering::Acquire)
+                {
+                    return Ok(());
+                }
+                serde_json::to_string(&jsonrpc::Notification {
+                    jsonrpc: Some(jsonrpc::Version::V2),
+                    method: "$/cancelRequest".into(),
+                    params: jsonrpc::Params::Map(
+                        [("id".into(), serde_json::to_value(id)?)]
+                            .into_iter()
+                            .collect(),
+                    ),
+                })?
+            }
         };
         self.send_string_to_server(server_stdin, json, &self.name)
             .await
@@ -259,13 +292,17 @@ impl Transport {
     ) -> Result<()> {
         let (id, result) = match output {
             jsonrpc::Output::Success(jsonrpc::Success { id, result, .. }) => (id, Ok(result)),
-            jsonrpc::Output::Failure(jsonrpc::Failure { id, error, .. }) => {
-                error!("{language_server_name} <- {error}");
-                (id, Err(error.into()))
-            }
+            jsonrpc::Output::Failure(jsonrpc::Failure { id, error, .. }) => (id, Err(error.into())),
         };
 
         if let Some(tx) = self.pending_requests.lock().await.remove(&id) {
+            if let Err(Error::Rpc(error)) = &result {
+                if matches!(error.code.code(), -32802..=-32800) {
+                    log::debug!("{language_server_name} <- {error}");
+                } else {
+                    error!("{language_server_name} <- {error}");
+                }
+            }
             match tx.send(result).await {
                 Ok(_) => (),
                 Err(_) => log::debug!(
@@ -274,11 +311,8 @@ impl Transport {
                 ),
             };
         } else {
-            log::error!(
-                "Discarding Language Server response without a request (id={:?}) {:?}",
-                id,
-                result
-            );
+            // A server must respond even when we canceled and removed the request.
+            log::debug!("Discarding response for a completed or canceled request (id={id:?})");
         }
 
         Ok(())
@@ -376,6 +410,7 @@ impl Transport {
         initialize_notify: Arc<Notify>,
     ) {
         let mut pending_messages: Vec<Payload> = Vec::new();
+        let mut full_changes: Vec<(lsp::Url, tokio::time::Instant, Payload)> = Vec::new();
         let mut is_pending = true;
 
         // Pin outside the loop to avoid cancellation-safety issue:
@@ -416,6 +451,7 @@ impl Transport {
         // TODO: events that use capabilities need to do the right thing
 
         loop {
+            let next_change = full_changes.iter().map(|(_, deadline, _)| *deadline).min();
             tokio::select! {
                 biased;
                 _ = &mut notified, if is_pending => {
@@ -455,13 +491,32 @@ impl Transport {
                             break;
                         } else if is_pending && !is_initialize(&msg) {
                             // ignore notifications
-                            if let Payload::Notification(_) = msg {
+                            if matches!(msg, Payload::Notification(_) | Payload::FullDocumentChange { .. }) {
                                 continue;
                             }
 
                             log::info!("Language server not initialized, delaying request");
                             pending_messages.push(msg);
                         } else {
+                            if let Payload::FullDocumentChange { ref params, debounce } = msg {
+                                let uri = params.text_document.uri.clone();
+                                let deadline = tokio::time::Instant::now() + debounce;
+                                if let Some(entry) = full_changes.iter_mut().find(|(pending_uri, _, _)| *pending_uri == uri) {
+                                    *entry = (uri, deadline, msg);
+                                } else {
+                                    full_changes.push((uri, deadline, msg));
+                                }
+                                continue;
+                            }
+                            // Queries, saves, closes and other client notifications must see
+                            // the latest text. Replies and cancellation do not depend on it.
+                            if !matches!(msg, Payload::Response(_) | Payload::CancelRequest { .. }) {
+                                for (_, _, change) in full_changes.drain(..) {
+                                    if let Err(err) = transport.send_payload_to_server(&mut server_stdin, change).await {
+                                        error!("{} full sync err: <- {err:?}", transport.name);
+                                    }
+                                }
+                            }
                             let is_shutdown_msg = is_shutdown(&msg);
                             let is_exit_msg = is_exit(&msg);
                             // Set the flag *before* flushing to stdin so that the recv task
@@ -497,6 +552,26 @@ impl Transport {
                             Err(err) => {
                                 error!("{} inject err: <- {err:?}", transport.name);
                             }
+                        }
+                    }
+                }
+                _ = async {
+                    if let Some(deadline) = next_change {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    let now = tokio::time::Instant::now();
+                    let mut index = 0;
+                    while index < full_changes.len() {
+                        if full_changes[index].1 <= now {
+                            let (_, _, change) = full_changes.remove(index);
+                            if let Err(err) = transport.send_payload_to_server(&mut server_stdin, change).await {
+                                error!("{} full sync err: <- {err:?}", transport.name);
+                            }
+                        } else {
+                            index += 1;
                         }
                     }
                 }

@@ -38,6 +38,7 @@ pub struct PullDiagnosticsEvent {
 
 pub struct PullAllDocumentsDiagnosticsEvent {
     pub language_servers: HashSet<LanguageServerId>,
+    pub changed_document: DocumentId,
 }
 
 pub struct CodeActionHintEvent {

@@ -30,6 +30,28 @@ struct ClientState {
     registered: HashMap<String, globset::GlobSet>,
 }
 
+fn watch_glob(pattern: &lsp::GlobPattern) -> Option<globset::Glob> {
+    let pattern = match pattern {
+        lsp::GlobPattern::String(pattern) => pattern.clone(),
+        lsp::GlobPattern::Relative(relative) => {
+            let uri = match &relative.base_uri {
+                lsp::OneOf::Left(folder) => &folder.uri,
+                lsp::OneOf::Right(uri) => uri,
+            };
+            let base = uri.to_file_path().ok()?;
+            let base = base.to_str()?;
+            #[cfg(windows)]
+            let base = base.replace('\\', "/");
+            format!(
+                "{}/{}",
+                globset::escape(base.trim_end_matches('/')),
+                relative.pattern
+            )
+        }
+    };
+    GlobBuilder::new(&pattern).build().ok()
+}
+
 /// The Handler uses a dedicated tokio task to respond to file change events by
 /// forwarding changes to LSPs that have registered for notifications with a
 /// matching glob.
@@ -140,10 +162,8 @@ impl Handler {
 
                     let mut builder = GlobSetBuilder::new();
                     for watcher in ops.watchers {
-                        if let lsp::GlobPattern::String(pattern) = watcher.glob_pattern {
-                            if let Ok(glob) = GlobBuilder::new(&pattern).build() {
-                                builder.add(glob);
-                            }
+                        if let Some(glob) = watch_glob(&watcher.glob_pattern) {
+                            builder.add(glob);
                         }
                     }
                     match builder.build() {
@@ -185,5 +205,49 @@ impl Handler {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_watch_matches_nested_configs_and_escapes_base_directory() {
+        let base = std::env::temp_dir().join("helix-repo[1]");
+        let pattern = lsp::GlobPattern::Relative(lsp::RelativePattern {
+            base_uri: lsp::OneOf::Right(lsp::Url::from_directory_path(&base).unwrap()),
+            pattern: "**/.oxlintrc.jsonc".into(),
+        });
+        let matcher = watch_glob(&pattern).unwrap().compile_matcher();
+        assert!(matcher.is_match(base.join(".oxlintrc.jsonc")));
+        assert!(matcher.is_match(base.join("nested/.oxlintrc.jsonc")));
+        assert!(!matcher.is_match(base.join("nested/source.ts")));
+        assert!(!matcher.is_match(std::env::temp_dir().join("helix-repo1/.oxlintrc.jsonc")));
+    }
+
+    #[test]
+    fn relative_watch_accepts_workspace_folder_base() {
+        let base = std::env::temp_dir().join("helix-watch");
+        let pattern = lsp::GlobPattern::Relative(lsp::RelativePattern {
+            base_uri: lsp::OneOf::Left(lsp::WorkspaceFolder {
+                uri: lsp::Url::from_directory_path(&base).unwrap(),
+                name: "workspace".into(),
+            }),
+            pattern: "**/*.ts".into(),
+        });
+        assert!(watch_glob(&pattern)
+            .unwrap()
+            .compile_matcher()
+            .is_match(base.join("src/example.ts")));
+    }
+
+    #[test]
+    fn relative_watch_rejects_non_file_base() {
+        let pattern = lsp::GlobPattern::Relative(lsp::RelativePattern {
+            base_uri: lsp::OneOf::Right("https://example.com/repo".parse().unwrap()),
+            pattern: "**/*.ts".into(),
+        });
+        assert!(watch_glob(&pattern).is_none());
     }
 }

@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
+use futures_util::future::{BoxFuture, Shared};
+use futures_util::FutureExt;
 use helix_lsp::lsp;
+use parking_lot::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, Instant};
 
@@ -22,15 +25,18 @@ use crate::job;
 /// > to compute. When the item is selected in the user interface then a
 /// > 'completionItem/resolve' request is sent with the selected completion item as a parameter.
 /// > The returned completion item should have the documentation property filled in.
+#[derive(Clone)]
 pub struct ResolveHandler {
-    last_request: Option<Arc<LspCompletionItem>>,
-    resolver: Sender<ResolveRequest>,
+    last_request: Arc<Mutex<Option<Arc<ResolveRequest>>>>,
+    resolver: Sender<Arc<ResolveRequest>>,
 }
+
+pub type CompletionResolve = Shared<BoxFuture<'static, Option<lsp::CompletionItem>>>;
 
 impl ResolveHandler {
     pub fn new() -> ResolveHandler {
         ResolveHandler {
-            last_request: None,
+            last_request: Arc::default(),
             resolver: ResolveTimeout::default().spawn(),
         }
     }
@@ -66,7 +72,12 @@ impl ResolveHandler {
             item.resolved = true;
             return;
         }
-        if self.last_request.as_deref().is_some_and(|it| it == item) {
+        if self
+            .last_request
+            .lock()
+            .as_ref()
+            .is_some_and(|request| *request.item == *item)
+        {
             return;
         }
         let Some(ls) = editor.language_servers.get_by_id(item.provider).cloned() else {
@@ -80,29 +91,61 @@ impl ResolveHandler {
                 ..
             })
         ) {
-            let item = Arc::new(item.clone());
-            self.last_request = Some(item.clone());
-            send_blocking(&self.resolver, ResolveRequest { item, ls })
+            let request = self.request(item, ls);
+            send_blocking(&self.resolver, request)
         } else {
             item.resolved = true;
         }
+    }
+
+    fn request(&self, item: &LspCompletionItem, ls: Arc<helix_lsp::Client>) -> Arc<ResolveRequest> {
+        let mut last = self.last_request.lock();
+        if let Some(request) = last.as_ref().filter(|request| *request.item == *item) {
+            return request.clone();
+        }
+        let request = Arc::new(ResolveRequest {
+            item: Arc::new(item.clone()),
+            ls,
+            future: Mutex::new(None),
+        });
+        *last = Some(request.clone());
+        request
+    }
+
+    /// Accepting bypasses the popup debounce, sharing any request already in flight.
+    pub fn resolve_now(
+        &self,
+        item: &LspCompletionItem,
+        ls: Arc<helix_lsp::Client>,
+    ) -> Option<CompletionResolve> {
+        if item.resolved
+            || !ls
+                .capabilities()
+                .completion_provider
+                .as_ref()
+                .is_some_and(|options| options.resolve_provider == Some(true))
+        {
+            return None;
+        }
+        Some(self.request(item, ls).resolve())
     }
 }
 
 struct ResolveRequest {
     item: Arc<LspCompletionItem>,
     ls: Arc<helix_lsp::Client>,
+    future: Mutex<Option<CompletionResolve>>,
 }
 
 #[derive(Default)]
 struct ResolveTimeout {
-    next_request: Option<ResolveRequest>,
+    next_request: Option<Arc<ResolveRequest>>,
     in_flight: Option<Arc<LspCompletionItem>>,
     task_controller: TaskController,
 }
 
 impl AsyncHook for ResolveTimeout {
-    type Event = ResolveRequest;
+    type Event = Arc<ResolveRequest>;
 
     fn handle_event(
         &mut self,
@@ -139,9 +182,31 @@ impl AsyncHook for ResolveTimeout {
 }
 
 impl ResolveRequest {
-    async fn execute(self, cancel: TaskHandle) {
-        let future = self.ls.resolve_completion_item(&self.item.item);
-        let Some(resolved_item) = helix_event::cancelable_future(future, cancel).await else {
+    fn resolve(&self) -> CompletionResolve {
+        self.future
+            .lock()
+            .get_or_insert_with(|| {
+                // Construct the request before applying the completion: enqueueing it
+                // here preserves the document state against which it was requested.
+                let future = self.ls.resolve_completion_item(&self.item.item);
+                async move {
+                    match future.await {
+                        Ok(item) => Some(item),
+                        Err(err) => {
+                            log::error!("completion resolve request failed: {err}");
+                            None
+                        }
+                    }
+                }
+                .boxed()
+                .shared()
+            })
+            .clone()
+    }
+
+    async fn execute(self: Arc<Self>, cancel: TaskHandle) {
+        let Some(resolved_item) = helix_event::cancelable_future(self.resolve(), cancel).await
+        else {
             return;
         };
         job::dispatch(move |_, compositor| {
@@ -150,23 +215,13 @@ impl ResolveRequest {
                 .unwrap()
                 .completion
             {
-                let resolved_item = CompletionItem::Lsp(match resolved_item {
-                    Ok(item) => LspCompletionItem {
-                        item,
-                        resolved: true,
-                        ..*self.item
-                    },
-                    Err(err) => {
-                        log::error!("completion resolve request failed: {err}");
-                        // set item to resolved so we don't request it again
-                        // we could also remove it but that oculd be odd ui
-                        let mut item = (*self.item).clone();
-                        item.resolved = true;
-                        item
-                    }
-                });
-                completion.replace_item(&*self.item, resolved_item);
-            };
+                let mut item = (*self.item).clone();
+                if let Some(resolved) = resolved_item {
+                    item.item = resolved;
+                }
+                item.resolved = true;
+                completion.replace_item(&*self.item, CompletionItem::Lsp(item));
+            }
         })
         .await
     }

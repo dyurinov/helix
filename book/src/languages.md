@@ -192,6 +192,8 @@ These are the available options for a language server.
 | `args`                     | A list of arguments to pass to the language server binary                                                                         |
 | `config`                   | Language server initialization options                                                                                            |
 | `timeout`                  | The maximum time a request to the language server may take, in seconds. Defaults to `20`                                          |
+| `client-file-watching`     | Advertise client-side file-change notifications. Defaults to `true`. Set to `false` for a server that should use its own filesystem watcher; Helix currently forwards editor-originated changes rather than watching all external changes. |
+| `full-sync-debounce`       | Delay in milliseconds for coalescing full-document LSP changes per document. Defaults to `0` (disabled). Requests and document lifecycle notifications flush pending changes first. Incremental synchronization is unaffected. |
 | `environment`              | Any environment variables that will be used when starting the language server `{ "KEY1" = "Value1", "KEY2" = "Value2" }`          |
 | `required-root-patterns`   | A list of `glob` patterns to look for in the working directory of the lsp. The language server is only started if at least one of them is found. |
 

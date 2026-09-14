@@ -114,6 +114,8 @@ impl Config {
             (Err(err), Err(_)) => return Err(err),
         };
 
+        keymap::named_commands(&res.keys)
+            .map_err(|err| ConfigLoadError::BadConfig(serde::de::Error::custom(err)))?;
         Ok(res)
     }
 

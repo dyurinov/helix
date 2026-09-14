@@ -174,8 +174,72 @@ impl<'de> serde::de::Visitor<'de> for KeyTrieVisitor {
         M: serde::de::MapAccess<'de>,
     {
         let mut mapping = IndexMap::new();
-        while let Some((key, value)) = map.next_entry::<KeyEvent, KeyTrie>()? {
-            mapping.insert(key, value);
+        let mut command = None;
+        let mut description = None;
+        let mut toast = None;
+        let mut alias = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "command" => command = Some(map.next_value::<MappableCommand>()?),
+                "description" => description = Some(map.next_value::<String>()?),
+                "toast" => toast = Some(map.next_value::<crate::commands::CommandToast>()?),
+                "alias" => alias = Some(map.next_value::<String>()?),
+                _ => {
+                    let key = key.parse::<KeyEvent>().map_err(serde::de::Error::custom)?;
+                    mapping.insert(key, map.next_value::<KeyTrie>()?);
+                }
+            }
+        }
+
+        if command.is_some() || description.is_some() || toast.is_some() || alias.is_some() {
+            if !mapping.is_empty() {
+                return Err(serde::de::Error::custom(
+                    "a described command cannot also contain a sub-keymap",
+                ));
+            }
+            let mut command = command.ok_or_else(|| serde::de::Error::missing_field("command"))?;
+            let description =
+                description.ok_or_else(|| serde::de::Error::missing_field("description"))?;
+            match &mut command {
+                MappableCommand::Typable {
+                    name,
+                    doc,
+                    toast: command_toast,
+                    alias: command_alias,
+                    ..
+                } => {
+                    if toast.is_some() && !crate::commands::typed::supports_command_toast(name) {
+                        return Err(serde::de::Error::custom(
+                            "toasts require :run-shell-command, :write-and-run or :write-all-and-run",
+                        ));
+                    }
+                    *doc = description;
+                    *command_toast = toast.map(Arc::new);
+                    if let Some(alias) = &alias {
+                        let mut chars = alias.chars();
+                        if !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+                            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        {
+                            return Err(serde::de::Error::custom(
+                                "command aliases must start with a letter and contain only letters, digits, '-' or '_'",
+                            ));
+                        }
+                        if crate::commands::typed::TYPABLE_COMMAND_MAP.contains_key(alias.as_str())
+                        {
+                            return Err(serde::de::Error::custom(format!(
+                                "command alias '{alias}' conflicts with a built-in command",
+                            )));
+                        }
+                    }
+                    *command_alias = alias;
+                }
+                _ => {
+                    return Err(serde::de::Error::custom(
+                        "custom descriptions require a typable command starting with ':'",
+                    ));
+                }
+            }
+            return Ok(KeyTrie::MappableCommand(command));
         }
         Ok(KeyTrie::Node(KeyTrieNode::new("", mapping)))
     }
@@ -260,6 +324,45 @@ pub enum KeymapResult {
 
 /// A map of command names to keybinds that will execute the command.
 pub type ReverseKeymap = HashMap<String, Vec<Vec<KeyEvent>>>;
+
+/// Collect command aliases from the effective keymaps, including nested modes.
+pub fn named_commands(
+    keys: &HashMap<Mode, KeyTrie>,
+) -> Result<HashMap<String, MappableCommand>, String> {
+    fn visit(
+        trie: &KeyTrie,
+        commands: &mut HashMap<String, MappableCommand>,
+    ) -> Result<(), String> {
+        match trie {
+            KeyTrie::MappableCommand(
+                command @ MappableCommand::Typable {
+                    alias: Some(alias), ..
+                },
+            ) => {
+                if let Some(existing) = commands.insert(alias.clone(), command.clone()) {
+                    if existing != *command || existing.doc() != command.doc() {
+                        return Err(format!(
+                            "conflicting definitions for command alias '{alias}'"
+                        ));
+                    }
+                }
+            }
+            KeyTrie::Node(node) => {
+                for child in node.values() {
+                    visit(child, commands)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    let mut commands = HashMap::new();
+    for trie in keys.values() {
+        visit(trie, &mut commands)?;
+    }
+    Ok(commands)
+}
 
 pub struct Keymaps {
     pub map: Box<dyn DynAccess<HashMap<Mode, KeyTrie>>>,
@@ -608,6 +711,8 @@ is_sticky = false
                         name: "pipe".to_string(),
                         args: "sed -E 's/\\s+$//g'".to_string(),
                         doc: "".to_string(),
+                        toast: None,
+                        alias: None,
                     },
                 })
             },

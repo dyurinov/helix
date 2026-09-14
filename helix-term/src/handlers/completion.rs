@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use helix_core::chars::char_is_word;
 use helix_core::completion::CompletionProvider;
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_event::{register_hook, TaskHandle};
+use helix_event::{cancelable_future, register_hook, TaskHandle};
 use helix_lsp::lsp;
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::document::Mode;
@@ -50,7 +50,9 @@ async fn replace_completions(
     mut requests: JoinSet<CompletionResponse>,
     is_incomplete: bool,
 ) {
-    while let Some(mut response) = handle_response(&mut requests, is_incomplete).await {
+    while let Some(Some(mut response)) =
+        cancelable_future(handle_response(&mut requests, is_incomplete), &handle).await
+    {
         let handle = handle.clone();
         dispatch(move |editor, compositor| {
             let editor_view = compositor.find::<ui::EditorView>().unwrap();

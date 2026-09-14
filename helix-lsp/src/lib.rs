@@ -937,19 +937,21 @@ fn start_client(
         id,
         name,
         ls_config.timeout,
+        ls_config.full_sync_debounce,
     )?;
 
     let client = Arc::new(client);
 
     // Initialize the client asynchronously
     let _client = client.clone();
+    let client_file_watching = ls_config.client_file_watching;
     tokio::spawn(async move {
         use futures_util::TryFutureExt;
         let value = _client
             .capabilities
             .get_or_try_init(|| {
                 _client
-                    .initialize(enable_snippets)
+                    .initialize(enable_snippets, client_file_watching)
                     .map_ok(|response| response.capabilities)
             })
             .await;

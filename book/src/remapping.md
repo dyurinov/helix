@@ -46,6 +46,64 @@ g = { a = "code_action" } # Maps `ga` to show possible code actions
 j = { k = "normal_mode" } # Maps `jk` to exit insert mode
 ```
 
+Typable commands can have a custom description in the keybinding hint. Use an
+inline table with `command` and `description` instead of a command string:
+
+```toml
+[keys.normal.space]
+C-b = { command = ":run-shell-command make", description = "Build project" }
+```
+
+This form supports a single typable command (starting with `:`). The description
+only changes the hint; the command and its arguments execute normally.
+
+Add `alias` to expose the same binding as a named `:` command:
+
+```toml
+[keys.normal.space]
+C-b = { command = ":write-and-run make", description = "Build project", alias = "build-project" }
+```
+
+Both the keybinding and `:build-project` execute the stored command, including
+its save behavior and any `toast` messages. Aliases appear in command-name
+completion and show the binding's description in command help. They take no
+additional arguments; expansions such as `%{file_path_absolute}` use the
+current buffer when the command runs. `:config-reload` updates the available
+aliases. Names must start with a letter and contain only letters, digits, `-`
+or `_`. Built-in command names and conflicting alias definitions are rejected.
+
+Shell command bindings can also define a `toast` table. `success` and `failure`
+are required messages, and `start` is optional:
+
+```toml
+[keys.normal.space]
+C-b = { command = ":write-and-run make", description = "Build project", toast = { start = "Building...", success = "Build finished", failure = "Build failed" } }
+```
+
+Toasts use Helix's status line and clear with normal editor input. They are
+supported for `:run-shell-command` (including `:sh` and `:!`), `:write-and-run`,
+and `:write-all-and-run`. The start message appears after saving, when the shell
+job is scheduled. The result message appears only after the process exits:
+exit code zero means success; a nonzero exit, signal, or process error means
+failure. Successful commands show the notification instead of an output popup.
+Failures show a red notification and a popup with the exit status, stdout and
+stderr. A save or argument error reports the failure message and error detail
+without starting the shell. Other bindings keep their normal behavior.
+
+Use `:write-and-run` to save the current buffer before a shell command, or
+`:write-all-and-run` to save all modified buffers. These commands wait for
+code actions on save, formatting and disk writes, and stop if saving fails or
+the target buffers remain modified. Saving uses the normal configuration and
+error handling of `:write` / `:write-all`; in particular, formatter failures
+still allow saving without formatting. Input pauses during the save phase;
+the shell command runs asynchronously afterward.
+
+```toml
+[keys.normal.space]
+C-b = { command = ":write-and-run make", description = "Save and build" }
+C-l = { command = ":write-all-and-run make lint", description = "Save all and lint" }
+```
+
 ## Minor modes
 
 Minor modes are accessed by pressing a key (usually from normal mode), giving access to dedicated bindings. Bindings
