@@ -940,9 +940,14 @@ impl Application {
                         // do nothing
                     }
                     Notification::Exit => {
-                        let status =
-                            format!("Language server exited: {}", language_server!().name());
-                        self.editor.set_status(status);
+                        // Restart and stop remove the client before its exit notification arrives.
+                        // Cleanup must still run even if the client is no longer in the registry.
+                        if let Some(language_server) = self.editor.language_server_by_id(server_id)
+                        {
+                            let status =
+                                format!("Language server exited: {}", language_server.name());
+                            self.editor.set_status(status);
+                        }
 
                         // LSPs may produce diagnostics for files that haven't been opened in helix,
                         // we need to clear those and remove the entries from the list if this leads to

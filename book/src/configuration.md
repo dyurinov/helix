@@ -33,3 +33,24 @@ signal to the Helix process, such as by using the command `pkill -USR1 hx`.
 Finally, you can have a `config.toml` and a `languages.toml` local to a project by putting it under a `.helix` directory in your repository.
 Its settings will be merged with the configuration directory and the built-in configuration.
 
+## Markdown reading mode (local build)
+
+Bind `Space m` to open a rendered, read-only preview of the current `.md` file.
+Editing keys and paste are ignored while reading. Use `j`/`k`
+or arrows to scroll, `Ctrl-d`/`Ctrl-u` for half pages, Page Down/Page Up for
+full pages, and `gg`/`G` for the beginning/end.
+
+Press `g` then `w` to reveal the source and start the usual word-jump command.
+Press `q`, Escape, or `Space m` to reveal the source without jumping. After
+scrolling or navigating, the source opens at the section being read. Use `[`/`]`
+to move between headings, `/` to search, `n`/`N` for next/previous matches, and
+`?` to show the controls. Comments are hidden, prose reflows, and fenced code,
+tables, task lists, and emphasis are rendered. The preview includes unsaved edits.
+
+```toml
+[keys.normal.space]
+m = "markdown_reading_mode"
+```
+
+Automatic preview is off by default. Set `editor.markdown-reading-mode = true`
+only if you want newly opened Markdown files to start in preview.

@@ -294,6 +294,8 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
+    /// Open Markdown documents in a rendered, read-only reading mode.
+    pub markdown_reading_mode: bool,
     /// Padding to keep between the edge of the screen and the cursor when scrolling. Defaults to 5.
     pub scrolloff: usize,
     /// Number of lines to scroll at once. Defaults to 3
@@ -1175,6 +1177,7 @@ impl Default for WordCompletion {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            markdown_reading_mode: false,
             scrolloff: 5,
             scroll_lines: 3,
             mouse: true,

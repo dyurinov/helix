@@ -428,6 +428,7 @@ impl MappableCommand {
         insert_mode, "Insert before selection",
         append_mode, "Append after selection",
         command_mode, "Enter command mode",
+        markdown_reading_mode, "Read rendered Markdown without editing",
         file_picker, "Open file picker",
         file_picker_in_current_buffer_directory, "Open file picker at current buffer's directory",
         file_picker_in_current_directory, "Open file picker at current working directory",
@@ -3618,6 +3619,14 @@ fn changed_file_picker(cx: &mut Context) {
             }
         });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn markdown_reading_mode(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, cx| {
+        if let Some(view) = compositor.find::<ui::EditorView>() {
+            view.open_markdown_reader(cx.editor);
+        }
+    }));
 }
 
 pub fn command_palette(cx: &mut Context) {

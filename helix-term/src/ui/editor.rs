@@ -1,6 +1,7 @@
 use crate::{
     commands::{self, OnKeyCallback, OnKeyCallbackKind},
     compositor::{Component, Context, Event, EventResult},
+    ctrl,
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
     key,
@@ -29,13 +30,15 @@ use helix_view::{
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
-    Document, Editor, Theme, View,
+    Document, DocumentId, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{collections::HashMap, mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
+use super::markdown_reader::{content_area, MarkdownReader};
 use tui::{buffer::Buffer as Surface, text::Span};
 
 pub struct EditorView {
+    markdown_readers: HashMap<DocumentId, MarkdownReader>,
     pub keymaps: Keymaps,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pseudo_pending: Vec<KeyEvent>,
@@ -60,6 +63,7 @@ pub enum InsertEvent {
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
+            markdown_readers: HashMap::new(),
             keymaps,
             on_next_key: None,
             pseudo_pending: Vec::new(),
@@ -74,6 +78,238 @@ impl EditorView {
         &mut self.spinners
     }
 
+    fn is_reading_markdown(&self, editor: &Editor, doc: &Document) -> bool {
+        let is_markdown = doc.path().is_some_and(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        });
+        is_markdown
+            && self
+                .markdown_readers
+                .get(&doc.id())
+                .map_or(editor.config().markdown_reading_mode, |reader| {
+                    reader.active
+                })
+    }
+
+    pub fn open_markdown_reader(&mut self, editor: &mut Editor) {
+        let doc = doc!(editor);
+        if !doc.path().is_some_and(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        }) {
+            editor.set_error("Markdown reading mode requires a .md file");
+            return;
+        }
+        let reader = self.markdown_readers.entry(doc.id()).or_default();
+        reader.active = true;
+        reader.moved = false;
+        reader.pending_g = false;
+        reader.pending_space = false;
+        reader.search = None;
+        reader.help = false;
+        reader.invalidate();
+        editor.status_msg = None;
+    }
+
+    fn render_markdown_reader(
+        &self,
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        surface: &mut Surface,
+    ) {
+        if let Some(reader) = self.markdown_readers.get(&doc.id()) {
+            let name = doc
+                .path()
+                .and_then(|path| path.file_name())
+                .unwrap_or_default()
+                .to_string_lossy();
+            reader.draw(view.area, surface, &editor.theme, &name);
+        }
+    }
+
+    fn prepare_markdown_reader(&mut self, editor: &Editor, doc: &Document, view: &View) {
+        let reader = self.markdown_readers.entry(doc.id()).or_default();
+        reader.active = true;
+        let area = content_area(view.area);
+        if !reader.is_current(doc.version(), &editor.theme, area.width) {
+            let cursor = doc
+                .selection(view.id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            reader.prepare(
+                &doc.text().to_string(),
+                doc.version(),
+                &editor.theme,
+                &editor.syn_loader.load(),
+                area.width,
+                doc.text().char_to_byte(cursor),
+            );
+        }
+        reader.scroll = reader.scroll.min(reader.max_scroll(area.height));
+    }
+
+    fn leave_markdown_reader(&mut self, context: &mut Context, jump: bool) -> EventResult {
+        let (view, doc) = current!(context.editor);
+        if let Some(reader) = self.markdown_readers.get_mut(&doc.id()) {
+            reader.active = false;
+            if reader.moved {
+                if let Some(byte) = reader.source_byte() {
+                    let pos = doc.text().byte_to_char(byte.min(doc.text().len_bytes()));
+                    doc.set_selection(view.id, Selection::point(pos));
+                    doc.set_view_offset(
+                        view.id,
+                        helix_view::view::ViewPosition {
+                            anchor: pos,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+        if jump {
+            let _ = self.handle_event(&Event::Key(key!('g')), context);
+            self.handle_event(&Event::Key(key!('w')), context)
+        } else {
+            EventResult::Consumed(None)
+        }
+    }
+
+    fn handle_markdown_reader(
+        &mut self,
+        event: &Event,
+        context: &mut Context,
+    ) -> Option<EventResult> {
+        if context.editor.should_close() {
+            return None;
+        }
+        if !matches!(event, Event::Key(_) | Event::Paste(_) | Event::Mouse(_)) {
+            return None;
+        }
+        let (view, doc) = current_ref!(context.editor);
+        if !self.is_reading_markdown(context.editor, doc) {
+            return None;
+        }
+        self.prepare_markdown_reader(context.editor, doc, view);
+        let height = content_area(view.area).height.max(1);
+        let reader = self.markdown_readers.get_mut(&doc.id()).unwrap();
+        let max_scroll = reader.max_scroll(height);
+        reader.scroll = reader.scroll.min(max_scroll);
+        let previous_scroll = reader.scroll;
+        match event {
+            Event::Key(key) => {
+                let mut key = *key;
+                canonicalize_key(&mut key);
+                if let Some(query) = &mut reader.search {
+                    match key {
+                        key!(Esc) => reader.search = None,
+                        key!(Enter) => {
+                            reader.query = reader.search.take().unwrap();
+                            if !reader.find(true, true) {
+                                context.editor.set_status("No matches in preview");
+                            }
+                            reader.scroll = reader.scroll.min(max_scroll);
+                        }
+                        key!(Backspace) => {
+                            query.pop();
+                        }
+                        KeyEvent {
+                            code: KeyCode::Char(character),
+                            modifiers: KeyModifiers::NONE,
+                        } => query.push(character),
+                        _ => {}
+                    }
+                    return Some(EventResult::Consumed(None));
+                }
+                let pending_g = take(&mut reader.pending_g);
+                let pending_space = take(&mut reader.pending_space);
+                if pending_g && key == key!('w') {
+                    return Some(self.leave_markdown_reader(context, true));
+                }
+                if pending_space && key == key!('m') {
+                    return Some(self.leave_markdown_reader(context, false));
+                }
+                if matches!(
+                    key,
+                    key!('j')
+                        | key!('k')
+                        | key!(Down)
+                        | key!(Up)
+                        | ctrl!('d')
+                        | ctrl!('u')
+                        | ctrl!('f')
+                        | ctrl!('b')
+                        | key!(PageDown)
+                        | key!(PageUp)
+                        | key!(Home)
+                        | key!(End)
+                        | key!('G')
+                ) || (pending_g && key == key!('g'))
+                {
+                    reader.focus_source = None;
+                }
+                match key {
+                    key!('q') | key!(Esc) => {
+                        return Some(self.leave_markdown_reader(context, false))
+                    }
+                    key!('j') | key!(Down) => {
+                        reader.scroll = reader.scroll.saturating_add(1).min(max_scroll)
+                    }
+                    key!('k') | key!(Up) => reader.scroll = reader.scroll.saturating_sub(1),
+                    ctrl!('d') => {
+                        reader.scroll = reader.scroll.saturating_add(height / 2).min(max_scroll)
+                    }
+                    ctrl!('u') => reader.scroll = reader.scroll.saturating_sub(height / 2),
+                    ctrl!('f') | key!(PageDown) => {
+                        reader.scroll = reader.scroll.saturating_add(height).min(max_scroll)
+                    }
+                    ctrl!('b') | key!(PageUp) => {
+                        reader.scroll = reader.scroll.saturating_sub(height)
+                    }
+                    key!(Home) => reader.scroll = 0,
+                    key!('G') | key!(End) => reader.scroll = max_scroll,
+                    key!('g') if pending_g => reader.scroll = 0,
+                    key!('g') => reader.pending_g = true,
+                    key!(' ') => reader.pending_space = true,
+                    key!(']') => reader.heading(true),
+                    key!('[') => reader.heading(false),
+                    key!('/') => reader.search = Some(String::new()),
+                    key!('n') => {
+                        reader.find(true, false);
+                    }
+                    key!('N') => {
+                        reader.find(false, false);
+                    }
+                    key!('?') => reader.help = !reader.help,
+                    _ => {}
+                }
+                reader.scroll = reader.scroll.min(max_scroll);
+                reader.moved |= reader.scroll != previous_scroll;
+                Some(EventResult::Consumed(None))
+            }
+            Event::Paste(_) => Some(EventResult::Consumed(None)),
+            Event::Mouse(event) => {
+                if matches!(
+                    event.kind,
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                ) {
+                    reader.focus_source = None;
+                }
+                match event.kind {
+                    MouseEventKind::ScrollDown => {
+                        reader.scroll = reader.scroll.saturating_add(3).min(max_scroll)
+                    }
+                    MouseEventKind::ScrollUp => reader.scroll = reader.scroll.saturating_sub(3),
+                    _ => {}
+                }
+                reader.moved |= reader.scroll != previous_scroll;
+                Some(EventResult::Consumed(None))
+            }
+            _ => None,
+        }
+    }
+
     pub fn render_view(
         &self,
         editor: &Editor,
@@ -83,6 +319,10 @@ impl EditorView {
         surface: &mut Surface,
         is_focused: bool,
     ) {
+        if self.is_reading_markdown(editor, doc) {
+            self.render_markdown_reader(editor, doc, view, surface);
+            return;
+        }
         let inner = view.inner_area(doc);
         let area = view.area;
         let theme = &editor.theme;
@@ -1452,6 +1692,9 @@ impl Component for EditorView {
         event: &Event,
         context: &mut crate::compositor::Context,
     ) -> EventResult {
+        if let Some(result) = self.handle_markdown_reader(event, context) {
+            return result;
+        }
         let mut cx = commands::Context {
             editor: context.editor,
             count: None,
@@ -1641,8 +1884,13 @@ impl Component for EditorView {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
         }
 
+        self.markdown_readers
+            .retain(|id, _| cx.editor.document(*id).is_some());
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
+            if self.is_reading_markdown(cx.editor, doc) {
+                self.prepare_markdown_reader(cx.editor, doc, view);
+            }
             self.render_view(cx.editor, doc, view, area, surface, is_focused);
         }
 
@@ -1735,6 +1983,9 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if !editor.should_close() && self.is_reading_markdown(editor, doc!(editor)) {
+            return (None, CursorKind::Hidden);
+        }
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {
