@@ -454,6 +454,10 @@ pub struct LanguageServerConfiguration {
     /// changes and servers without an explicit opt-in are sent immediately.
     #[serde(default)]
     pub full_sync_debounce: u64,
+    /// Pull diagnostics for hidden buffers. When disabled, keep them dirty and
+    /// request fresh diagnostics when a buffer becomes visible.
+    #[serde(default = "default_background_diagnostics")]
+    pub background_diagnostics: bool,
     #[serde(default)]
     pub required_root_patterns: Option<GlobSet>,
 }
@@ -663,6 +667,10 @@ fn default_timeout() -> u64 {
 }
 
 fn default_client_file_watching() -> bool {
+    true
+}
+
+fn default_background_diagnostics() -> bool {
     true
 }
 

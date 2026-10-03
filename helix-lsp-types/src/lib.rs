@@ -1367,7 +1367,7 @@ pub struct WorkspaceClientCapabilities {
 
     /// Client workspace capabilities specific to diagnostics.
     /// since 3.17.0
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "diagnostics", skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<DiagnosticWorkspaceClientCapabilities>,
 }
 
@@ -2784,6 +2784,29 @@ mod tests {
     {
         let value = serde_json::from_str::<T>(json).unwrap();
         assert_eq!(&value, expected);
+    }
+
+    #[test]
+    fn diagnostic_client_capabilities() {
+        test_serialization(
+            &ClientCapabilities {
+                workspace: Some(WorkspaceClientCapabilities {
+                    diagnostic: Some(DiagnosticWorkspaceClientCapabilities {
+                        refresh_support: Some(true),
+                    }),
+                    ..Default::default()
+                }),
+                text_document: Some(TextDocumentClientCapabilities {
+                    diagnostic: Some(DiagnosticClientCapabilities {
+                        related_document_support: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            r#"{"workspace":{"diagnostics":{"refreshSupport":true}},"textDocument":{"diagnostic":{"relatedDocumentSupport":true}}}"#,
+        );
     }
 
     #[test]

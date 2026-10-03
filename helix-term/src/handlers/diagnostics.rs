@@ -242,12 +242,13 @@ fn request_document_diagnostics_for_language_servers(
         let Some(doc) = editor.document_mut(doc_id) else {
             return;
         };
-        if !doc
+        let Some(background_diagnostics) = doc
             .language_servers_with_feature(LanguageServerFeature::PullDiagnostics)
-            .any(|server| server.id() == server_id)
-        {
+            .find(|server| server.id() == server_id)
+            .map(|server| server.background_diagnostics())
+        else {
             continue;
-        }
+        };
         let cancel = doc
             .pull_diagnostic_controllers
             .entry(server_id)
@@ -258,6 +259,12 @@ fn request_document_diagnostics_for_language_servers(
             start_diagnostic_request(editor, doc_id, server_id, cancel, None);
         } else {
             doc.background_diagnostic_servers.insert(server_id);
+            // Large projects can make a hidden-buffer check as expensive as
+            // checking the active file. Keep the invalidation until focus instead
+            // of repeatedly rebuilding checker state for every open buffer.
+            if !background_diagnostics {
+                continue;
+            }
             let slots = slots.clone();
             tokio::spawn(async move {
                 let wait = async {

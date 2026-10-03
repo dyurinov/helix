@@ -938,6 +938,7 @@ fn start_client(
         name,
         ls_config.timeout,
         ls_config.full_sync_debounce,
+        ls_config.background_diagnostics,
     )?;
 
     let client = Arc::new(client);

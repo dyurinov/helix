@@ -121,6 +121,7 @@ pub struct Client {
     /// workspace folders added while the server is still initializing
     req_timeout: u64,
     full_sync_debounce: u64,
+    background_diagnostics: bool,
 }
 
 impl Client {
@@ -270,6 +271,7 @@ impl Client {
         name: String,
         req_timeout: u64,
         full_sync_debounce: u64,
+        background_diagnostics: bool,
     ) -> Result<(
         Self,
         UnboundedReceiver<(LanguageServerId, Call)>,
@@ -316,6 +318,7 @@ impl Client {
             config,
             req_timeout,
             full_sync_debounce,
+            background_diagnostics,
             root_path,
             root_uri,
             workspace_folders: Mutex::new(workspace_folders),
@@ -328,6 +331,10 @@ impl Client {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn background_diagnostics(&self) -> bool {
+        self.background_diagnostics
     }
 
     pub fn id(&self) -> LanguageServerId {
