@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 use arc_swap::ArcSwap;
 use gix::filter::plumbing::driver::apply::Delay;
+use std::collections::HashSet;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
@@ -24,7 +25,14 @@ mod test;
 
 #[inline]
 fn get_repo_dir(file: &Path) -> Result<&Path> {
-    file.parent().context("file has no parent directory")
+    // The file and its parent directories may have been deleted. Discover the
+    // repository from the nearest surviving directory while retaining the full
+    // file path for the HEAD lookup.
+    file.parent()
+        .context("file has no parent directory")?
+        .ancestors()
+        .find(|path| path.is_dir())
+        .context("file has no existing parent directory")
 }
 
 pub fn get_diff_base(file: &Path, trust_full: bool) -> Result<Vec<u8>> {
@@ -91,6 +99,37 @@ pub fn for_each_changed_file(
     f: impl Fn(Result<FileChange>) -> bool,
 ) -> Result<()> {
     status(&open_repo(cwd, trust_full)?.to_thread_local(), f)
+}
+
+pub fn search_files(root: &Path, trust_full: bool) -> Result<Vec<PathBuf>> {
+    let root = gix::path::realpath(root)?;
+    let repo = open_repo(&root, trust_full)?.to_thread_local();
+    let work_dir = repo.workdir().context("working tree not found")?;
+    // Include HEAD-to-index changes as well as index-to-worktree changes.
+    // Rename detection adds no value when only the current file paths are needed.
+    let items = repo
+        .status(gix::progress::Discard)?
+        .untracked_files(UntrackedFiles::Files)
+        .tree_index_track_renames(gix::status::tree_index::TrackRenames::Disabled)
+        .into_iter(Vec::<gix::bstr::BString>::new())?;
+    let mut files = HashSet::new();
+    for item in items {
+        let item = item?;
+        if matches!(
+            &item,
+            gix::status::Item::IndexWorktree(Item::DirectoryContents { entry, .. })
+                if entry.status != Status::Untracked
+        ) {
+            continue;
+        }
+        let path = work_dir.join(item.location().to_path()?);
+        if path.starts_with(&root) && path.is_file() {
+            files.insert(path);
+        }
+    }
+    let mut files: Vec<_> = files.into_iter().collect();
+    files.sort_unstable();
+    Ok(files)
 }
 
 fn open_repo(path: &Path, trust_full: bool) -> Result<ThreadSafeRepository> {

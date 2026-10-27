@@ -20,6 +20,17 @@ mod status;
 
 pub use status::FileChange;
 
+/// Existing staged, unstaged and untracked files under a Git search root.
+pub fn git_search_files(root: &Path, trust_full: bool) -> Result<Vec<PathBuf>> {
+    #[cfg(feature = "git")]
+    return git::search_files(root, trust_full);
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (root, trust_full);
+        bail!("Git support is not enabled")
+    }
+}
+
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
 #[derive(Clone)]

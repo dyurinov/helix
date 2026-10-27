@@ -9,7 +9,7 @@ use tokio::time::Instant;
 
 use crate::{job, ui::overlay::Overlay};
 
-use super::{CachedPreview, DynQueryCallback, Picker};
+use super::{CachedPreview, DynQueryCallback, DynamicQuery, Picker};
 
 pub(super) struct PreviewHighlightHandler<T: 'static + Send + Sync, D: 'static + Send + Sync> {
     trigger: Option<Arc<Path>>,
@@ -113,7 +113,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
 }
 
 pub(super) struct DynamicQueryChange {
-    pub query: Arc<str>,
+    pub query: DynamicQuery,
     pub is_paste: bool,
 }
 
@@ -123,8 +123,8 @@ pub(super) struct DynamicQueryHandler<T: 'static + Send + Sync, D: 'static + Sen
     // Defaults to 100ms if not provided via `Picker::with_dynamic_query`. Callers may want to set
     // this higher if the dynamic query is expensive - for example global search.
     debounce: Duration,
-    last_query: Arc<str>,
-    query: Option<Arc<str>>,
+    last_query: DynamicQuery,
+    query: Option<DynamicQuery>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> DynamicQueryHandler<T, D> {
@@ -132,7 +132,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> DynamicQueryHandler<T, 
         Self {
             callback: Arc::new(callback),
             debounce: Duration::from_millis(duration_ms.unwrap_or(100)),
-            last_query: "".into(),
+            last_query: DynamicQuery::default(),
             query: None,
         }
     }
