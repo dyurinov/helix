@@ -31,17 +31,52 @@ pub fn git_search_files(root: &Path, trust_full: bool) -> Result<Vec<PathBuf>> {
     }
 }
 
+/// A commit that replaces `HEAD` as the diff base for files in a reviewed worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewBase {
+    /// Canonical path of the reviewed worktree.
+    pub root: PathBuf,
+    /// Full hex object id of the base commit.
+    pub commit: String,
+    /// Renamed files: absolute new path to absolute path at the base commit.
+    pub renames: std::collections::HashMap<PathBuf, PathBuf>,
+}
+
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
 #[derive(Clone)]
 pub struct DiffProviderRegistry {
     providers: Vec<DiffProvider>,
+    /// Shared by all clones so background diff refreshes observe review mode.
+    review_base: Arc<ArcSwap<Option<ReviewBase>>>,
 }
 
 impl DiffProviderRegistry {
+    /// Diff files inside `base.root` against `base.commit` instead of `HEAD`.
+    /// `None` restores regular `HEAD` diffs.
+    pub fn set_review_base(&self, base: Option<ReviewBase>) {
+        self.review_base.store(Arc::new(base));
+    }
+
+    pub fn review_base(&self) -> Option<ReviewBase> {
+        Option::clone(&self.review_base.load())
+    }
+
     /// Get the given file from the VCS. This provides the unedited document as a "base"
     /// for a diff to be created.
     pub fn get_diff_base(&self, file: &Path, trust_full: bool) -> Option<Vec<u8>> {
+        #[cfg(feature = "git")]
+        if let Some(base) = self.review_base.load().as_ref() {
+            match git::get_diff_base_at(file, base, trust_full) {
+                Ok(Some(res)) => return Some(res),
+                Ok(None) => {}
+                Err(err) => {
+                    log::debug!("{err:#?}");
+                    log::debug!("failed to open review diff base for {}", file.display());
+                    return None;
+                }
+            }
+        }
         self.providers
             .iter()
             .find_map(|provider| match provider.get_diff_base(file, trust_full) {
@@ -102,7 +137,10 @@ impl Default for DiffProviderRegistry {
             DiffProvider::Git,
             DiffProvider::None,
         ];
-        DiffProviderRegistry { providers }
+        DiffProviderRegistry {
+            providers,
+            review_base: Arc::new(ArcSwap::from_pointee(None)),
+        }
     }
 }
 

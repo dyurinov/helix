@@ -97,6 +97,7 @@
 | `insert_mode` | Insert before selection | normal: `` i ``, select: `` i `` |
 | `append_mode` | Append after selection | normal: `` a ``, select: `` a `` |
 | `command_mode` | Enter command mode | normal: `` : ``, select: `` : `` |
+| `markdown_reading_mode` | Read rendered Markdown without editing |  |
 | `file_picker` | Open file picker | normal: `` <space>f ``, select: `` <space>f `` |
 | `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory |  |
 | `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>F ``, select: `` <space>F `` |
@@ -110,6 +111,25 @@
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
 | `changed_file_picker` | Open changed file picker | normal: `` <space>g ``, select: `` <space>g `` |
+| `review_files_picker` | Open review file picker (starts a review if none is active) | normal: `` <space>vv ``, select: `` <space>vv `` |
+| `review_comments_picker` | Open review comment picker | normal: `` <space>vC ``, select: `` <space>vC `` |
+| `review_comment` | Add a review comment on the selected lines | normal: `` <space>vc ``, select: `` <space>vc `` |
+| `review_reply` | Reply to the review thread under the cursor | normal: `` <space>vr ``, select: `` <space>vr `` |
+| `review_edit_comment` | Edit the draft review comment under the cursor | normal: `` <space>ve ``, select: `` <space>ve `` |
+| `review_delete_comment` | Delete the draft review comment under the cursor | normal: `` <space>vd ``, select: `` <space>vd `` |
+| `review_toggle_resolved` | Resolve or unresolve the review thread under the cursor | normal: `` <space>vx ``, select: `` <space>vx `` |
+| `review_toggle_viewed` | Mark the current file viewed (saving it) and go to the next unviewed file, or unmark it | normal: `` <space>vm ``, select: `` <space>vm `` |
+| `review_next_file` | Go to the next file in the review | normal: `` <space>vn ``, select: `` <space>vn `` |
+| `review_prev_file` | Go to the previous file in the review | normal: `` <space>vp ``, select: `` <space>vp `` |
+| `goto_next_review_comment` | Goto next review comment | normal: `` ]r ``, select: `` ]r `` |
+| `goto_prev_review_comment` | Goto previous review comment | normal: `` [r ``, select: `` [r `` |
+| `review_show_change` | Show the base and current version of the change under the cursor | normal: `` <space>vh ``, select: `` <space>vh `` |
+| `review_toggle_inline` | Show or hide inline review comments | normal: `` <space>vt ``, select: `` <space>vt `` |
+| `review_info` | Show review summary and keys | normal: `` <space>vi ``, select: `` <space>vi `` |
+| `review_export` | Copy review comments as Markdown to the clipboard | normal: `` <space>vy ``, select: `` <space>vy `` |
+| `review_submit` | Submit the review to GitHub | normal: `` <space>vs ``, select: `` <space>vs `` |
+| `review_refresh` | Reload the review and its GitHub threads | normal: `` <space>vR ``, select: `` <space>vR `` |
+| `review_close` | Close the review | normal: `` <space>vq ``, select: `` <space>vq `` |
 | `select_references_to_symbol_under_cursor` | Select symbol references | normal: `` <space>h ``, select: `` <space>h `` |
 | `workspace_symbol_picker` | Open workspace symbol picker |  |
 | `syntax_workspace_symbol_picker` | Open workspace symbol picker from syntax information |  |

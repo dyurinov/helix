@@ -10,6 +10,7 @@ pub mod overlay;
 pub mod picker;
 pub mod popup;
 pub mod prompt;
+pub mod review_thread;
 mod select;
 mod spinner;
 mod statusline;
@@ -440,6 +441,13 @@ pub mod completers {
 
     pub fn none(_editor: &Editor, _input: &str) -> Vec<Completion> {
         Vec::new()
+    }
+
+    pub fn review_event(_editor: &Editor, input: &str) -> Vec<Completion> {
+        fuzzy_match(input, ["comment", "approve", "request-changes"], false)
+            .into_iter()
+            .map(|(name, _)| ((0..), Span::raw(name)))
+            .collect()
     }
 
     pub fn buffer(editor: &Editor, input: &str) -> Vec<Completion> {
