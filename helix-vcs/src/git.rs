@@ -47,7 +47,48 @@ pub fn get_diff_base(file: &Path, trust_full: bool) -> Result<Vec<u8>> {
         .context("failed to open git repo")?
         .to_thread_local();
     let head = repo.head_commit()?;
-    let file_oid = find_file_in_commit(&repo, &head, &file)?;
+    file_contents_at_commit(&repo, &head, &file)
+}
+
+/// Get the contents of `file` at the review base `commit` instead of `HEAD`.
+///
+/// Returns `Ok(None)` when the file is outside the reviewed worktree `root`, so callers can
+/// fall back to the regular `HEAD` diff. Files that do not exist at the base commit were added
+/// by the reviewed changes and get an empty base, which marks every line as added.
+pub fn get_diff_base_at(
+    file: &Path,
+    base: &crate::ReviewBase,
+    trust_full: bool,
+) -> Result<Option<Vec<u8>>> {
+    debug_assert!(file.is_absolute());
+    let root = base.root.as_path();
+    let file = gix::path::realpath(file).context("resolve symlinks")?;
+    if !file.starts_with(root) {
+        return Ok(None);
+    }
+
+    let repo_dir = get_repo_dir(&file)?;
+    let repo = open_repo(repo_dir, trust_full)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    // Nested repositories and submodules have their own history.
+    let workdir = repo.workdir().map(gix::path::realpath).transpose()?;
+    if workdir.as_deref() != Some(root) {
+        return Ok(None);
+    }
+    let commit = repo
+        .find_commit(ObjectId::from_hex(base.commit.as_bytes())?)
+        .context("review base commit not found")?;
+    // Renamed files are diffed against their previous path.
+    let file = base.renames.get(&file).cloned().unwrap_or(file);
+    match find_file_in_commit(&repo, &commit, &file) {
+        Ok(_) => file_contents_at_commit(&repo, &commit, &file).map(Some),
+        Err(_) => Ok(Some(Vec::new())),
+    }
+}
+
+fn file_contents_at_commit(repo: &Repository, commit: &Commit, file: &Path) -> Result<Vec<u8>> {
+    let file_oid = find_file_in_commit(repo, commit, file)?;
 
     let file_object = repo.find_object(file_oid)?;
     let data = file_object.detach().data;

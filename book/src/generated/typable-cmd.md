@@ -87,6 +87,23 @@
 | `:pipe`, `:\|` | Pipe each selection to the shell command. |
 | `:pipe-to` | Pipe each selection to the shell command, ignoring output. |
 | `:run-shell-command`, `:sh`, `:!` | Run a shell command |
+| `:review`, `:rv` | Start reviewing the current branch against a base revision (default: the pull request base or the remote default branch). Diffs, viewed files and comments follow the review until :review-close. |
+| `:review-pr` | Check out a GitHub pull request (number, URL or branch) with `gh` and review it. |
+| `:review-close` | Close the review. Draft comments are kept for the next review of this branch. |
+| `:review-refresh` | Reload the review's changed files and GitHub threads. |
+| `:review-files` | Open the review file picker. |
+| `:review-comments` | Open the review comment picker. |
+| `:review-comment` | Add a draft review comment on the selected lines. Use \n for line breaks. |
+| `:review-reply` | Add a draft reply to the review thread under the cursor. |
+| `:review-edit` | Replace the draft comment under the cursor. |
+| `:review-delete` | Delete the draft comment under the cursor. |
+| `:review-resolve` | Resolve or unresolve the GitHub review thread under the cursor. |
+| `:review-viewed` | Toggle viewed for the current file and go to the next unviewed file. |
+| `:review-export` | Copy all unresolved review comments as Markdown to the clipboard, or write them to a file. |
+| `:review-submit` | Submit draft comments and replies to the pull request: `comment` (default), `approve` or `request-changes`, followed by an optional message. |
+| `:review-info` | Show the review summary, pull request description and review keys. |
+| `:write-and-run` | Save the current buffer, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails. |
+| `:write-all-and-run` | Save all modified buffers, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails. |
 | `:reset-diff-change`, `:diffget`, `:diffg` | Reset the diff change at the cursor position. |
 | `:clear-register` | Clear given register. If no argument is provided, clear all registers. |
 | `:set-register` | Set contents of the given register. |

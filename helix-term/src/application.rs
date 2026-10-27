@@ -91,6 +91,23 @@ fn setup_integration_logging() {
 }
 
 impl Application {
+    /// The text of the last rendered frame, one line per row, for integration tests.
+    #[cfg(feature = "integration")]
+    pub fn screen(&self) -> String {
+        let buffer = self.terminal.backend().buffer();
+        let area = buffer.area;
+        (area.top()..area.bottom())
+            .map(|y| {
+                (area.left()..area.right())
+                    .filter_map(|x| buffer.get(x, y).map(|cell| cell.symbol.to_string()))
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn new(
         args: Args,
         config: Config,
@@ -654,6 +671,8 @@ impl Application {
             "'{}' written, {lines}L {size}",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
+        // Persist review comment positions moved by the saved edits.
+        crate::commands::review::document_saved(&mut self.editor);
     }
 
     #[inline(always)]

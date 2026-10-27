@@ -300,6 +300,7 @@ This layer is a kludge of mappings, mostly pickers.
 | `b`     | Open buffer picker                                                      | `buffer_picker`                            |
 | `j`     | Open jumplist picker                                                    | `jumplist_picker`                          |
 | `g`     | Open changed file picker                                                | `changed_file_picker`                      |
+| `v`     | Enter [code review](./code-review.md) mode                              | N/A                                        |
 | `G`     | Debug (experimental)                                                    | N/A                                        |
 | `k`     | Show documentation for item under cursor in a [popup](#popup) (**LSP**) | `hover`                                    |
 | `s`     | Open document symbol picker (**LSP** or **TS**)                         | `lsp_or_syntax_symbol_picker`              |
@@ -387,6 +388,8 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `]x`     | Go to previous (X)HTML element               | `goto_prev_xml_element` |
 | `]Space` | Add newline below                            | `add_newline_below`     |
 | `[Space` | Add newline above                            | `add_newline_above`     |
+| `]r`     | Go to next [review comment](./code-review.md)  | `goto_next_review_comment` |
+| `[r`     | Go to previous [review comment](./code-review.md) | `goto_prev_review_comment` |
 
 ## Insert mode
 

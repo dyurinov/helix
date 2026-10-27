@@ -158,7 +158,43 @@ where
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
+        helix_view::editor::StatusLineElement::Review => render_review,
     }
+}
+
+fn render_review<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let Some(review) = context.editor.review.as_deref() else {
+        return;
+    };
+    let current = context
+        .doc
+        .path()
+        .and_then(|path| review.relative_path(path))
+        .filter(|path| review.file(path).is_some());
+    let mut text = format!(" review {}/{}", review.viewed_count(), review.files.len());
+    if let Some(path) = current {
+        text.push_str(if review.is_viewed(&path) {
+            " ✓"
+        } else {
+            " ○"
+        });
+    }
+    let drafts = review.draft_count();
+    if drafts > 0 {
+        text.push_str(&format!(
+            " · {drafts} draft{}",
+            if drafts == 1 { "" } else { "s" }
+        ));
+    }
+    text.push(' ');
+    let theme = &context.editor.theme;
+    let style = theme
+        .try_get_exact("ui.statusline.review")
+        .unwrap_or_else(|| theme.get("info"));
+    write(context, Span::styled(text, style));
 }
 
 fn render_mode<'a, F>(context: &mut RenderContext<'a>, write: F)

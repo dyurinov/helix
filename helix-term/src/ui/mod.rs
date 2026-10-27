@@ -442,6 +442,13 @@ pub mod completers {
         Vec::new()
     }
 
+    pub fn review_event(_editor: &Editor, input: &str) -> Vec<Completion> {
+        fuzzy_match(input, ["comment", "approve", "request-changes"], false)
+            .into_iter()
+            .map(|(name, _)| ((0..), Span::raw(name)))
+            .collect()
+    }
+
     pub fn buffer(editor: &Editor, input: &str) -> Vec<Completion> {
         let names = editor.documents.values().map(|doc| {
             doc.relative_path()

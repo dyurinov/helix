@@ -1,5 +1,6 @@
 pub(crate) mod dap;
 pub(crate) mod lsp;
+pub(crate) mod review;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
@@ -12,6 +13,13 @@ use helix_stdx::{
 };
 use helix_vcs::{FileChange, Hunk};
 pub use lsp::*;
+use review::{
+    goto_next_review_comment, goto_prev_review_comment, review_close, review_comment,
+    review_comments_picker, review_delete_comment, review_edit_comment, review_export,
+    review_files_picker, review_info, review_next_file, review_prev_file, review_refresh,
+    review_reply, review_show_change, review_submit, review_toggle_inline, review_toggle_resolved,
+    review_toggle_viewed,
+};
 pub use syntax::*;
 use tui::{
     text::{Span, Spans},
@@ -442,6 +450,25 @@ impl MappableCommand {
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
         changed_file_picker, "Open changed file picker",
+        review_files_picker, "Open review file picker (starts a review if none is active)",
+        review_comments_picker, "Open review comment picker",
+        review_comment, "Add a review comment on the selected lines",
+        review_reply, "Reply to the review thread under the cursor",
+        review_edit_comment, "Edit the draft review comment under the cursor",
+        review_delete_comment, "Delete the draft review comment under the cursor",
+        review_toggle_resolved, "Resolve or unresolve the review thread under the cursor",
+        review_toggle_viewed, "Toggle viewed for the current file and go to the next unviewed file",
+        review_next_file, "Go to the next file in the review",
+        review_prev_file, "Go to the previous file in the review",
+        goto_next_review_comment, "Goto next review comment",
+        goto_prev_review_comment, "Goto previous review comment",
+        review_show_change, "Show the base and current version of the change under the cursor",
+        review_toggle_inline, "Show or hide inline review comments",
+        review_info, "Show review summary and keys",
+        review_export, "Copy review comments as Markdown to the clipboard",
+        review_submit, "Submit the review to GitHub",
+        review_refresh, "Reload the review and its GitHub threads",
+        review_close, "Close the review",
         select_references_to_symbol_under_cursor, "Select symbol references",
         workspace_symbol_picker, "Open workspace symbol picker",
         syntax_workspace_symbol_picker, "Open workspace symbol picker from syntax information",
