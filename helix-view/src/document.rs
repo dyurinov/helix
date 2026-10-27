@@ -211,6 +211,8 @@ pub struct Document {
     // Last time we wrote to the file. This will carry the time the file was last opened if there
     // were no saves.
     last_saved_time: SystemTime,
+    /// Whether the current path has never been opened from disk or saved successfully.
+    is_new: bool,
 
     last_saved_revision: usize,
     version: i32, // should be usize?
@@ -773,6 +775,7 @@ impl Document {
             pending_completion_edits: Vec::new(),
             next_completion_edit: 0,
             last_saved_time: SystemTime::now(),
+            is_new: true,
             last_saved_revision: 0,
             modified_since_accessed: false,
             language_servers: HashMap::new(),
@@ -1328,11 +1331,12 @@ impl Document {
         self.append_changes_to_history(view);
         self.reset_modified();
         self.pickup_last_saved_time();
+        self.is_new = false;
         self.detect_indent_and_line_ending();
 
         match provider_registry.get_diff_base(&path, trust_full) {
             Some(diff_base) => self.set_diff_base(diff_base),
-            None => self.diff_handle = None,
+            None => self.clear_diff_base(),
         }
 
         self.version_control_head = provider_registry.get_current_head_name(&path, trust_full);
@@ -1370,6 +1374,7 @@ impl Document {
         // if parent doesn't exist we still want to open the document
         // and error out when document is saved
         self.path = path;
+        self.is_new = !self.path.as_ref().is_some_and(|path| path.is_file());
 
         self.detect_readonly();
         self.pickup_last_saved_time();
@@ -1986,6 +1991,11 @@ impl Document {
         current_revision != self.last_saved_revision || !self.changes.is_empty()
     }
 
+    /// Whether this document's current path has yet to be opened from disk or saved.
+    pub fn is_new(&self) -> bool {
+        self.is_new
+    }
+
     /// Save modifications to history, and so [`Self::is_modified`] will return false.
     pub fn reset_modified(&mut self) {
         let history = self.history.take();
@@ -2004,6 +2014,7 @@ impl Document {
         );
         self.last_saved_revision = rev;
         self.last_saved_time = save_time;
+        self.is_new = false;
     }
 
     /// Get the document's latest saved revision.
@@ -2131,6 +2142,11 @@ impl Document {
 
     pub fn diff_handle(&self) -> Option<&DiffHandle> {
         self.diff_handle.as_ref()
+    }
+
+    /// Clear the diff when the version control provider no longer has a base.
+    pub fn clear_diff_base(&mut self) {
+        self.diff_handle = None;
     }
 
     /// Intialize/updates the differ for this document with a new base.

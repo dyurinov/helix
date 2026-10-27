@@ -104,6 +104,22 @@ C-b = { command = ":write-and-run make", description = "Save and build" }
 C-l = { command = ":write-all-and-run make lint", description = "Save all and lint" }
 ```
 
+Files deleted on disk are left deleted when their buffers have no unsaved edits,
+so a staging command can stage the deletion. If a deleted file's buffer has
+unsaved edits, the command stops and preserves them. Use `:write` to restore the
+file before retrying, or discard the edits. New files are saved normally.
+
+Add `--refresh-diff` before the shell command to refresh the originating buffer's
+Git diff after the command exits successfully. The refresh runs in the background
+and preserves buffer contents, unsaved edits, selections and undo history. It
+still targets the original buffer if you switch files while the command runs.
+The diff uses the normal Git base (HEAD); staged changes can remain visible.
+
+```toml
+[keys.normal.space]
+C-a = { command = ':write-and-run --refresh-diff git add -- "%{file_path_absolute}"', description = "Save and stage current file", alias = "gaf", toast = { success = "Current file staged", failure = "Could not stage current file" } }
+```
+
 ## Minor modes
 
 Minor modes are accessed by pressing a key (usually from normal mode), giving access to dedicated bindings. Bindings

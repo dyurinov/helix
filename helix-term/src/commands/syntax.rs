@@ -300,10 +300,11 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         }),
     ];
 
-    let get_tags = |query: &str,
+    let get_tags = |query: &crate::ui::picker::DynamicQuery,
                     editor: &mut Editor,
                     state: Arc<SearchState>,
                     injector: &Injector<_, _>| {
+        let query = query.text.as_ref();
         if query.len() < 3 {
             return async { Ok(()) }.boxed();
         }

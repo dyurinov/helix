@@ -463,7 +463,11 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
         return;
     }
 
-    let get_symbols = |pattern: &str, editor: &mut Editor, _data, injector: &Injector<_, _>| {
+    let get_symbols = |query: &ui::picker::DynamicQuery,
+                       editor: &mut Editor,
+                       _data,
+                       injector: &Injector<_, _>| {
+        let pattern = query.text.as_ref();
         let doc = doc!(editor);
         let mut seen_language_servers = HashSet::new();
         let mut futures: FuturesUnordered<_> = doc

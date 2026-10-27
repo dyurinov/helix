@@ -2689,6 +2689,13 @@ fn write_and_run_impl(
     }
 
     if all {
+        // Check every buffer before saving any of them. Deleted files with edits
+        // need an explicit :write to restore them, rather than being recreated
+        // as a side effect of a shell command such as git add.
+        for doc_id in cx.editor.documents.keys().copied().collect::<Vec<_>>() {
+            flush_completion_edits(cx.editor, doc_id)?;
+            should_write_before_run(doc!(cx.editor, &doc_id))?;
+        }
         write_all_impl(
             cx,
             WriteAllOptions {
@@ -2703,15 +2710,19 @@ fn write_and_run_impl(
             doc!(cx.editor).path().is_some(),
             "Cannot run command: current buffer has no filename"
         );
-        write_impl(
-            cx,
-            None,
-            WriteOptions {
-                force: false,
-                auto_format: true,
-                code_actions: true,
-            },
-        )?;
+        let doc_id = doc!(cx.editor).id();
+        flush_completion_edits(cx.editor, doc_id)?;
+        if should_write_before_run(doc!(cx.editor))? {
+            write_impl(
+                cx,
+                None,
+                WriteOptions {
+                    force: false,
+                    auto_format: true,
+                    code_actions: true,
+                },
+            )?;
+        }
     }
     // Drain save-action/format followups and disk writes before starting the shell.
     cx.block_try_flush_writes()?;
@@ -2724,7 +2735,26 @@ fn write_and_run_impl(
             "Cannot run command: current buffer was not saved"
         );
     }
-    run_shell_command_with_toast(cx, args, event, toast)
+    let refresh_diff = args.has_flag("refresh-diff");
+    run_shell_command_with_toast(cx, args, event, toast, refresh_diff)
+}
+
+fn should_write_before_run(doc: &Document) -> anyhow::Result<bool> {
+    // A missing tracked file can also be opened after its deletion (for example
+    // from the changed-file picker). Its Git base distinguishes it from a new file.
+    if !doc.is_new() || doc.diff_handle().is_some() {
+        if let Some(path) = doc.path() {
+            if !path.try_exists()? {
+                ensure!(
+                    !doc.is_modified(),
+                    "Cannot run command: {} was deleted and has unsaved edits; use :write to restore it or discard the edits first",
+                    path.display()
+                );
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn run_shell_command(
@@ -2732,7 +2762,7 @@ fn run_shell_command(
     args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
-    run_shell_command_with_toast(cx, args, event, None)
+    run_shell_command_with_toast(cx, args, event, None, false)
 }
 
 fn run_shell_command_with_toast(
@@ -2740,6 +2770,7 @@ fn run_shell_command_with_toast(
     args: Args,
     event: PromptEvent,
     toast: Option<&CommandToast>,
+    refresh_diff: bool,
 ) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -2748,6 +2779,19 @@ fn run_shell_command_with_toast(
     let shell = cx.editor.config().shell.clone();
     let args = args.join(" ");
     let toast = toast.cloned();
+    let diff_target = refresh_diff
+        .then(|| {
+            let doc = doc!(cx.editor);
+            doc.path().map(|path| {
+                (
+                    doc.id(),
+                    path.to_owned(),
+                    cx.editor.diff_providers.clone(),
+                    doc_trust_full(cx.editor),
+                )
+            })
+        })
+        .flatten();
     if let Some(start) = toast.as_ref().and_then(|toast| toast.start.as_ref()) {
         cx.editor.set_status(start.clone());
     }
@@ -2778,8 +2822,37 @@ fn run_shell_command_with_toast(
                 (false, status.clone(), status)
             }
         };
+        // Refresh only after a successful shell exit. Git reads run off the UI thread,
+        // and the originating document is retained even if the user switches buffers.
+        let diff_update = if success {
+            if let Some((doc_id, path, providers, trust_full)) = diff_target {
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        let base = providers.get_diff_base(&path, trust_full);
+                        let head = providers.get_current_head_name(&path, trust_full);
+                        (doc_id, path, base, head)
+                    })
+                    .await?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some((doc_id, path, base, head)) = diff_update {
+                    if let Some(doc) = editor.document_mut(doc_id) {
+                        if doc.path() == Some(path.as_path()) {
+                            match base {
+                                Some(base) => doc.set_diff_base(base),
+                                None => doc.clear_diff_base(),
+                            }
+                            doc.set_version_control_head(head);
+                        }
+                    }
+                }
                 // Custom success notifications replace the output popup. Failures
                 // retain both streams and their exit status for troubleshooting.
                 if (!success || toast.is_none()) && !details.trim().is_empty() {
@@ -3103,6 +3176,15 @@ pub const SHELL_SIGNATURE: Signature = Signature {
     positionals: (1, Some(2)),
     raw_after: Some(1),
     ..Signature::DEFAULT
+};
+
+const WRITE_AND_RUN_SIGNATURE: Signature = Signature {
+    flags: &[Flag {
+        name: "refresh-diff",
+        doc: "refresh the originating buffer's Git diff after a successful shell command",
+        ..Flag::DEFAULT
+    }],
+    ..SHELL_SIGNATURE
 };
 
 pub const SHELL_COMPLETER: CommandCompleter = CommandCompleter::positional(&[
@@ -4101,7 +4183,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         doc: "Save the current buffer, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails.",
         fun: write_and_run,
         completer: SHELL_COMPLETER,
-        signature: SHELL_SIGNATURE,
+        signature: WRITE_AND_RUN_SIGNATURE,
     },
     TypableCommand {
         name: "write-all-and-run",
@@ -4109,7 +4191,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         doc: "Save all modified buffers, wait for save actions, formatting and disk writes, then run a shell command. Abort if saving fails.",
         fun: write_all_and_run,
         completer: SHELL_COMPLETER,
-        signature: SHELL_SIGNATURE,
+        signature: WRITE_AND_RUN_SIGNATURE,
     },
     TypableCommand {
         name: "reset-diff-change",
@@ -4330,7 +4412,7 @@ pub(super) fn execute_command_with_toast(
 
     let result = if toast.is_some() {
         match cmd.name {
-            "run-shell-command" => run_shell_command_with_toast(cx, args, event, toast),
+            "run-shell-command" => run_shell_command_with_toast(cx, args, event, toast, false),
             "write-and-run" => write_and_run_impl(cx, args, event, false, toast),
             "write-all-and-run" => write_and_run_impl(cx, args, event, true, toast),
             _ => bail!("'{}' does not support command toasts", cmd.name),

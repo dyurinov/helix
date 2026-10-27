@@ -9,6 +9,205 @@ use helix_view::doc;
 
 use super::*;
 
+#[cfg(feature = "git")]
+#[tokio::test(flavor = "multi_thread")]
+async fn write_and_run_stages_deletions_even_when_opened_after_deletion() -> anyhow::Result<()> {
+    for open_after_delete in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        let path = root.join("nested/deeper/deleted.txt");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        git(&["init"]);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, "original\n")?;
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initial",
+        ]);
+        if open_after_delete {
+            std::fs::remove_dir_all(root.join("nested"))?;
+        }
+        let mut app = AppBuilder::new().with_file(&path, None).build()?;
+        if !open_after_delete {
+            std::fs::remove_dir_all(root.join("nested"))?;
+        }
+        let original_buffer = doc!(app.editor).text().clone();
+        let keys = format!(
+            ":write-and-run --refresh-diff git -C '{}' --literal-pathspecs add -A -- '{}' <ret>",
+            root.display(),
+            path.display(),
+        );
+        test_key_sequence(
+            &mut app,
+            Some(&keys),
+            Some(&|app| {
+                assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+                assert!(!path.exists());
+                assert_eq!(
+                    git(&["diff", "--cached", "--name-status"]),
+                    b"D\tnested/deeper/deleted.txt\n"
+                );
+                assert_eq!(doc!(app.editor).text(), &original_buffer);
+                assert!(!doc!(app.editor).is_modified());
+                assert!(doc!(app.editor).diff_handle().is_some());
+            }),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_and_run_preserves_deleted_files() -> anyhow::Result<()> {
+    for all in [false, true] {
+        for modified in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("deleted.txt");
+            let marker = dir.path().join("command-ran");
+            std::fs::write(&path, "original\n")?;
+            let mut app = AppBuilder::new().with_file(&path, None).build()?;
+            std::fs::remove_file(&path)?;
+            let command = if all {
+                "write-all-and-run"
+            } else {
+                "write-and-run"
+            };
+            let keys = format!(
+                "{}:{command} --refresh-diff echo ran <gt> '{}' <ret>",
+                if modified { "iunsaved<esc>" } else { "" },
+                marker.display(),
+            );
+            test_key_sequence(
+                &mut app,
+                Some(&keys),
+                Some(&|app| {
+                    assert!(!path.exists(), "deleted file was recreated");
+                    assert_eq!(marker.exists(), !modified);
+                    assert_eq!(app.editor.is_err(), modified);
+                    let doc = doc!(app.editor);
+                    assert_eq!(doc.is_modified(), modified);
+                    assert_eq!(
+                        doc.text().to_string(),
+                        if modified {
+                            "unsavedoriginal\n"
+                        } else {
+                            "original\n"
+                        }
+                    );
+                    if modified {
+                        assert!(app.editor.get_status().unwrap().0.contains("deleted"));
+                    }
+                }),
+                false,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_and_run_preserves_deletion_after_reloading_a_new_file() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("new.txt");
+    let marker = dir.path().join("command-ran");
+    let mut app = AppBuilder::new().with_file(&path, None).build()?;
+    std::fs::write(&path, "created externally\n")?;
+    let keys = format!(":write-and-run echo ran <gt> '{}' <ret>", marker.display());
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some(":reload<ret>"),
+                Some(&|app| {
+                    assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+                    std::fs::remove_file(&path).unwrap();
+                }),
+            ),
+            (
+                Some(&keys),
+                Some(&|app| {
+                    assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+                    assert!(!path.exists());
+                    assert!(marker.exists());
+                    assert_eq!(doc!(app.editor).text().to_string(), "created externally\n");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_and_run_saves_new_files_and_remembers_successful_saves() -> anyhow::Result<()> {
+    for modified in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("new.txt");
+        let marker = dir.path().join("command-ran");
+        let mut app = AppBuilder::new().with_file(&path, None).build()?;
+        let keys = format!(
+            "{}:write-and-run echo ran <gt> '{}' <ret>",
+            if modified { "ihello<esc>" } else { "" },
+            marker.display(),
+        );
+        test_key_sequences(
+            &mut app,
+            vec![
+                (
+                    Some(&keys),
+                    Some(&|app| {
+                        assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+                        assert_eq!(
+                            std::fs::read_to_string(&path).unwrap(),
+                            if modified { "hello\n" } else { "\n" }
+                        );
+                        assert!(marker.exists());
+                        std::fs::remove_file(&path).unwrap();
+                        std::fs::remove_file(&marker).unwrap();
+                    }),
+                ),
+                (
+                    Some(&keys.replace("ihello<esc>", "")),
+                    Some(&|app| {
+                        assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+                        assert!(!path.exists());
+                        assert!(marker.exists());
+                    }),
+                ),
+            ],
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_exit_w_buffer_w_path() -> anyhow::Result<()> {
     let mut file = tempfile::NamedTempFile::new()?;

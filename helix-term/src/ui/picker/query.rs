@@ -11,6 +11,8 @@ pub(super) struct PickerQuery {
     /// The mapping between column names and input in the query
     /// for those columns.
     inner: HashMap<Arc<str>, Arc<str>>,
+    /// Standalone modifiers, registered only by pickers that support them.
+    flags: Vec<&'static str>,
     /// The byte ranges of the input text which are used as input for each column.
     /// This is calculated at parsing time for use in [Self::active_column].
     /// This Vec is naturally sorted in ascending order and ranges do not overlap.
@@ -35,12 +37,25 @@ impl PickerQuery {
             column_names,
             primary_column,
             inner,
+            flags: Vec::new(),
             column_ranges,
         }
     }
 
     pub(super) fn get(&self, column: &str) -> Option<&Arc<str>> {
         self.inner.get(column)
+    }
+
+    pub(super) fn register_flag(&mut self, flag: &'static str) {
+        self.flags.push(flag);
+    }
+
+    pub(super) fn active_flags(&self) -> Vec<&'static str> {
+        self.flags
+            .iter()
+            .copied()
+            .filter(|flag| self.inner.contains_key(*flag))
+            .collect()
     }
 
     pub(super) fn parse(&mut self, input: &str) -> HashMap<Arc<str>, Arc<str>> {
@@ -73,7 +88,8 @@ impl PickerQuery {
             };
         }
 
-        for (idx, ch) in input.char_indices() {
+        let mut chars = input.char_indices().peekable();
+        while let Some((idx, ch)) = chars.next() {
             match ch {
                 // Backslash escaping
                 _ if escaped => {
@@ -88,6 +104,25 @@ impl PickerQuery {
                 }
                 '\\' => escaped = !escaped,
                 '%' => {
+                    let flag = self.flags.iter().copied().find(|flag| {
+                        let tail = &input[idx + 1..];
+                        tail.strip_prefix(flag).is_some_and(|rest| {
+                            rest.is_empty() || rest.starts_with(' ') || rest.starts_with('%')
+                        })
+                    });
+                    if let Some(flag) = flag {
+                        fields.entry(flag.into()).or_default();
+                        let end = idx + 1 + flag.len();
+                        while chars.peek().is_some_and(|(idx, _)| *idx < end) {
+                            chars.next();
+                        }
+                        // Remove the modifier and one following separator. Keep the
+                        // current column so a modifier can appear inside a path filter.
+                        if chars.peek().is_some_and(|(_, ch)| *ch == ' ') {
+                            chars.next();
+                        }
+                        continue;
+                    }
                     if !text.is_empty() {
                         finish_field!();
                     }
@@ -328,6 +363,44 @@ mod test {
                 "field1".into() => "abc".into()
             )
         );
+    }
+
+    #[test]
+    fn standalone_flags_preserve_text_and_column_filters() {
+        let mut query = PickerQuery::new(["path".into(), "contents".into()].into_iter(), 1);
+        query.register_flag("g");
+        for input in [
+            "hello world %g %p .ts !generated",
+            "%g hello world %p .ts !generated",
+            "hello %g world %p .ts !generated",
+            "hello world %p .ts %g !generated",
+            "hello world %p .ts !generated %g",
+        ] {
+            query.parse(input);
+            assert_eq!(
+                query.get("contents").map(AsRef::as_ref),
+                Some("hello world"),
+                "{input}"
+            );
+            assert_eq!(
+                query.get("path").map(AsRef::as_ref),
+                Some(".ts !generated"),
+                "{input}"
+            );
+            assert_eq!(query.active_flags(), ["g"], "{input}");
+        }
+        query.parse(r"hello \%g");
+        assert_eq!(query.get("contents").map(AsRef::as_ref), Some("hello %g"));
+        assert!(query.active_flags().is_empty());
+        query.parse("hello %git");
+        assert!(query.active_flags().is_empty());
+        query.parse("hello %g");
+        let old = query.parse("hello");
+        assert_ne!(query, old);
+        assert!(query.active_flags().is_empty());
+        query.parse("%g");
+        assert_eq!(query.active_flags(), ["g"]);
+        assert!(query.get("contents").is_none());
     }
 
     #[test]

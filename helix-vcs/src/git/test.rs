@@ -2,7 +2,29 @@ use std::{fs::File, io::Write, path::Path, process::Command};
 
 use tempfile::TempDir;
 
-use crate::git;
+use crate::{git, FileChange};
+
+fn changed_files(root: &Path) -> Vec<(std::path::PathBuf, &'static str)> {
+    let changes = std::cell::RefCell::new(Vec::new());
+    git::for_each_changed_file(root, true, |change| {
+        let change = change.unwrap();
+        let kind = match change {
+            FileChange::Untracked { .. } => "untracked",
+            FileChange::Modified { .. } => "modified",
+            FileChange::Conflict { .. } => "conflict",
+            FileChange::Deleted { .. } => "deleted",
+            FileChange::Renamed { .. } => "renamed",
+        };
+        changes
+            .borrow_mut()
+            .push((change.path().strip_prefix(root).unwrap().to_owned(), kind));
+        true
+    })
+    .unwrap();
+    let mut changes = changes.into_inner();
+    changes.sort_unstable();
+    changes
+}
 
 fn exec_git_cmd(args: &str, git_dir: &Path) {
     let res = Command::new("git")
@@ -82,6 +104,166 @@ fn modified_file() {
     assert_eq!(
         git::get_diff_base(&file, true).unwrap(),
         Vec::from(contents)
+    );
+}
+
+#[test]
+fn changed_file_picker_labels_unstaged_deletions_and_hides_staged_deletions() {
+    let repo = empty_git_repo();
+    let root = gix::path::realpath(repo.path()).unwrap();
+    for name in [
+        "staged.txt",
+        "unstaged.txt",
+        "modified-then-deleted.txt",
+        "modified.txt",
+    ] {
+        std::fs::write(root.join(name), "original\n").unwrap();
+    }
+    create_commit(&root, true);
+    std::fs::remove_file(root.join("staged.txt")).unwrap();
+    std::fs::write(root.join("modified-then-deleted.txt"), "staged edit\n").unwrap();
+    std::fs::write(root.join("modified.txt"), "staged edit\n").unwrap();
+    exec_git_cmd("add -A", &root);
+    std::fs::remove_file(root.join("unstaged.txt")).unwrap();
+    std::fs::remove_file(root.join("modified-then-deleted.txt")).unwrap();
+    std::fs::write(root.join("modified.txt"), "unstaged edit\n").unwrap();
+    assert_eq!(
+        changed_files(&root),
+        vec![
+            ("modified-then-deleted.txt".into(), "deleted"),
+            ("modified.txt".into(), "modified"),
+            ("unstaged.txt".into(), "deleted"),
+        ]
+    );
+}
+
+#[test]
+fn changed_file_picker_shows_only_worktree_changes_after_staging() {
+    let repo = empty_git_repo();
+    let root = gix::path::realpath(repo.path()).unwrap();
+    for name in ["modified.txt", "renamed.txt", "restored.txt"] {
+        std::fs::write(root.join(name), format!("original {name}\n")).unwrap();
+    }
+    create_commit(&root, true);
+    std::fs::write(root.join("modified.txt"), "staged modification\n").unwrap();
+    std::fs::rename(root.join("renamed.txt"), root.join("renamed-new.txt")).unwrap();
+    std::fs::remove_file(root.join("restored.txt")).unwrap();
+    std::fs::write(root.join("added.txt"), "staged addition\n").unwrap();
+    exec_git_cmd("add -A", &root);
+    std::fs::write(root.join("added.txt"), "edited after staging\n").unwrap();
+    std::fs::write(root.join("renamed-new.txt"), "edited after rename\n").unwrap();
+    std::fs::write(
+        root.join("restored.txt"),
+        "recreated after staged deletion\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+    assert_eq!(
+        changed_files(&root),
+        vec![
+            ("added.txt".into(), "modified"),
+            ("renamed-new.txt".into(), "modified"),
+            ("restored.txt".into(), "untracked"),
+            ("untracked.txt".into(), "untracked"),
+        ]
+    );
+}
+
+#[test]
+fn changed_file_picker_works_before_the_first_commit() {
+    let repo = empty_git_repo();
+    let root = gix::path::realpath(repo.path()).unwrap();
+    std::fs::write(root.join("added.txt"), "new\n").unwrap();
+    std::fs::write(root.join("deleted.txt"), "new\n").unwrap();
+    exec_git_cmd("add -A", &root);
+    std::fs::remove_file(root.join("deleted.txt")).unwrap();
+    assert_eq!(
+        changed_files(&root),
+        vec![("deleted.txt".into(), "deleted")]
+    );
+}
+
+#[test]
+fn changed_file_picker_keeps_intent_to_add_untracked() {
+    let repo = empty_git_repo();
+    let root = gix::path::realpath(repo.path()).unwrap();
+    std::fs::write(root.join("new.txt"), "new\n").unwrap();
+    exec_git_cmd("add -N new.txt", &root);
+    assert_eq!(changed_files(&root), vec![("new.txt".into(), "untracked")]);
+}
+
+#[test]
+fn diff_base_survives_deleted_files_and_parent_directories() {
+    let repo = empty_git_repo();
+    let root = repo.path();
+    std::fs::create_dir_all(root.join("nested/deeper")).unwrap();
+    let file = root.join("nested/deeper/file.txt");
+    std::fs::write(&file, "original\n").unwrap();
+    create_commit(root, true);
+    std::fs::remove_dir_all(root.join("nested")).unwrap();
+    for staged in [false, true] {
+        if staged {
+            exec_git_cmd("add -A", root);
+        }
+        assert_eq!(git::get_diff_base(&file, true).unwrap(), b"original\n");
+        assert!(git::get_current_head_name(&file, true).is_ok());
+        assert!(git::search_files(root, true).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn search_files_include_staged_unstaged_and_untracked_paths() {
+    let repo = empty_git_repo();
+    let root = repo.path();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+    for name in [
+        "clean.txt",
+        "modified.txt",
+        "staged.txt",
+        "deleted.txt",
+        "nested/staged.txt",
+    ] {
+        std::fs::write(root.join(name), "before\n").unwrap();
+    }
+    create_commit(root, true);
+    std::fs::write(root.join("modified.txt"), "modified content\n").unwrap();
+    std::fs::write(root.join("staged.txt"), "staged content\n").unwrap();
+    std::fs::write(root.join("nested/staged.txt"), "nested staged content\n").unwrap();
+    exec_git_cmd("add staged.txt nested/staged.txt", root);
+    std::fs::write(root.join("staged.txt"), "also modified after staging\n").unwrap();
+    std::fs::write(root.join("new space \u{00e9}.txt"), "new\n").unwrap();
+    std::fs::write(root.join("ignored.txt"), "ignored\n").unwrap();
+    std::fs::remove_file(root.join("deleted.txt")).unwrap();
+    let root = gix::path::realpath(root).unwrap();
+    let paths = git::search_files(&root, true).unwrap();
+    let mut expected: Vec<_> = [
+        "modified.txt",
+        "staged.txt",
+        "nested/staged.txt",
+        "new space \u{00e9}.txt",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .collect();
+    expected.sort_unstable();
+    assert_eq!(paths, expected);
+    assert_eq!(
+        git::search_files(&root.join("nested"), true).unwrap(),
+        [root.join("nested/staged.txt")]
+    );
+}
+
+#[test]
+fn search_files_work_before_the_first_commit() {
+    let repo = empty_git_repo();
+    std::fs::write(repo.path().join("staged.txt"), "staged\n").unwrap();
+    exec_git_cmd("add staged.txt", repo.path());
+    std::fs::write(repo.path().join("untracked.txt"), "untracked\n").unwrap();
+    let root = gix::path::realpath(repo.path()).unwrap();
+    assert_eq!(
+        git::search_files(&root, true).unwrap(),
+        [root.join("staged.txt"), root.join("untracked.txt")]
     );
 }
 

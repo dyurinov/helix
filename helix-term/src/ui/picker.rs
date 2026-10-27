@@ -174,8 +174,12 @@ impl<I, D> Clone for Injector<I, D> {
 pub struct InjectorShutdown;
 
 impl<T, D> Injector<T, D> {
+    pub fn is_closed(&self) -> bool {
+        self.version != self.picker_version.load(atomic::Ordering::Relaxed)
+    }
+
     pub fn push(&self, item: T) -> Result<(), InjectorShutdown> {
-        if self.version != self.picker_version.load(atomic::Ordering::Relaxed) {
+        if self.is_closed() {
             return Err(InjectorShutdown);
         }
 
@@ -235,8 +239,24 @@ impl<T, D> Column<T, D> {
 
 /// Returns a new list of options to replace the contents of the picker
 /// when called with the current picker query,
-type DynQueryCallback<T, D> =
-    fn(&str, &mut Editor, Arc<D>, &Injector<T, D>) -> BoxFuture<'static, anyhow::Result<()>>;
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct DynamicQuery {
+    pub text: Arc<str>,
+    flags: Vec<&'static str>,
+}
+
+impl DynamicQuery {
+    pub fn has_flag(&self, flag: &str) -> bool {
+        self.flags.contains(&flag)
+    }
+}
+
+type DynQueryCallback<T, D> = fn(
+    &DynamicQuery,
+    &mut Editor,
+    Arc<D>,
+    &Injector<T, D>,
+) -> BoxFuture<'static, anyhow::Result<()>>;
 
 pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     columns: Arc<[Column<T, D>]>,
@@ -450,6 +470,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
+    pub fn with_query_flag(mut self, flag: &'static str) -> Self {
+        self.query.register_flag(flag);
+        self.query.parse(self.prompt.line());
+        self
+    }
+
     pub fn with_default_action(mut self, action: Action) -> Self {
         self.default_action = action;
         self
@@ -505,11 +531,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             .map(|item| item.data)
     }
 
-    fn primary_query(&self) -> Arc<str> {
-        self.query
-            .get(&self.columns[self.primary_column].name)
-            .cloned()
-            .unwrap_or_else(|| "".into())
+    fn primary_query(&self) -> DynamicQuery {
+        DynamicQuery {
+            text: self
+                .query
+                .get(&self.columns[self.primary_column].name)
+                .cloned()
+                .unwrap_or_else(|| "".into()),
+            flags: self.query.active_flags(),
+        }
     }
 
     fn header_height(&self) -> u16 {
@@ -1138,7 +1168,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                         if let Err(err) = ctx
                             .editor
                             .registers
-                            .push(history_register, self.primary_query().to_string())
+                            .push(history_register, self.primary_query().text.to_string())
                         {
                             ctx.editor.set_error(err.to_string());
                         }
