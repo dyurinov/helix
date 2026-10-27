@@ -34,15 +34,17 @@ installed and authenticated (`gh auth login`). Local reviews only need `git`.
 | --- | --- |
 | `Space v v` | Changed files with status, `+added -removed` counts, viewed marks and comment counts |
 | `Space v n` / `Space v p` | Next / previous changed file (jumps to its first change) |
-| `Space v m` | Toggle viewed for the current file and go to the next unviewed file |
+| `Space v m` | Mark the current file viewed (saving unsaved edits first) and go to the next unviewed file; press again to unmark |
 | `]g` / `[g` | Next / previous change in the file |
 | `Space v h` | Show the base and current version of the change under the cursor |
 | `]r` / `[r` | Next / previous comment in the file |
 | `Space v C` | All comments, drafts and threads in a picker |
 | `Space v i` | Summary, pull request description and a key reference |
 
-A viewed file becomes unviewed again when its contents change. Deleted files open
-as a read-only buffer with their base version.
+A viewed file becomes unviewed again when it changes outside the editor, for example
+when new commits are pulled. Saving your own edits keeps it viewed, so fixing small
+things as you go is a single `Space v m`. Deleted files open as a read-only buffer
+with their base version.
 
 ### Commenting
 

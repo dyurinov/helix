@@ -377,7 +377,7 @@ fn buffer_previous(
     Ok(())
 }
 
-fn write_impl(
+pub(super) fn write_impl(
     cx: &mut compositor::Context,
     path: Option<&str>,
     options: WriteOptions,
@@ -4309,7 +4309,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "review-viewed",
         aliases: &[],
-        doc: "Toggle viewed for the current file and go to the next unviewed file.",
+        doc: "Mark the current file viewed (saving unsaved edits) and go to the next unviewed file, or unmark it.",
         fun: super::review::typed::review_viewed,
         completer: CommandCompleter::none(),
         signature: Signature {

@@ -457,7 +457,7 @@ impl MappableCommand {
         review_edit_comment, "Edit the draft review comment under the cursor",
         review_delete_comment, "Delete the draft review comment under the cursor",
         review_toggle_resolved, "Resolve or unresolve the review thread under the cursor",
-        review_toggle_viewed, "Toggle viewed for the current file and go to the next unviewed file",
+        review_toggle_viewed, "Mark the current file viewed (saving it) and go to the next unviewed file, or unmark it",
         review_next_file, "Go to the next file in the review",
         review_prev_file, "Go to the previous file in the review",
         goto_next_review_comment, "Goto next review comment",

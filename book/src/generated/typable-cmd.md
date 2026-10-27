@@ -98,7 +98,7 @@
 | `:review-edit` | Replace the draft comment under the cursor. |
 | `:review-delete` | Delete the draft comment under the cursor. |
 | `:review-resolve` | Resolve or unresolve the GitHub review thread under the cursor. |
-| `:review-viewed` | Toggle viewed for the current file and go to the next unviewed file. |
+| `:review-viewed` | Mark the current file viewed (saving unsaved edits) and go to the next unviewed file, or unmark it. |
 | `:review-export` | Copy all unresolved review comments as Markdown to the clipboard, or write them to a file. |
 | `:review-submit` | Submit draft comments and replies to the pull request: `comment` (default), `approve` or `request-changes`, followed by an optional message. |
 | `:review-info` | Show the review summary, pull request description and review keys. |

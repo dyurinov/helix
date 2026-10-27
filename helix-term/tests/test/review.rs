@@ -166,7 +166,10 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     // Threads follow edits above them, even while they are hidden.
     let export = root.join("review.md");
     run_until(&mut app, "<space>vtggOzero<esc><space>vt", |app| {
-        doc!(app.editor).review_annotations.iter().all(|a| !a.hidden)
+        doc!(app.editor)
+            .review_annotations
+            .iter()
+            .all(|a| !a.hidden)
     })
     .await?;
     run_until(
@@ -188,11 +191,13 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     })
     .await?;
 
-    // Marking a file viewed moves on to the next unviewed file.
+    // Marking a file viewed saves its edits and moves on to the next unviewed file.
     run_until(&mut app, ":review-viewed<ret>", |app| {
         doc!(app.editor)
             .path()
             .is_some_and(|p| p.ends_with("b.txt"))
+            && std::fs::read_to_string(&a).is_ok_and(|text| text.starts_with("zero\n"))
+            && app.editor.documents().all(|doc| !doc.is_modified())
     })
     .await?;
     assert_eq!(app.editor.review.as_deref().unwrap().viewed_count(), 1);
@@ -210,6 +215,7 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     let review = app.editor.review.as_deref().unwrap();
     assert_eq!(review.draft_count(), 1);
     assert_eq!(review.threads[0].line, 3);
+    // Saving your own edits keeps the file viewed.
     assert_eq!(review.viewed_count(), 1);
 
     // A viewed file that changes on disk becomes unviewed.

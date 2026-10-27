@@ -672,7 +672,7 @@ impl Application {
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
         // Persist review comment positions moved by the saved edits.
-        crate::commands::review::document_saved(&mut self.editor);
+        crate::commands::review::document_saved(&mut self.editor, &doc_save_event.path);
     }
 
     #[inline(always)]

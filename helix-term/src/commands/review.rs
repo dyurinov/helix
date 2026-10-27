@@ -643,10 +643,20 @@ pub fn document_closed(editor: &mut Editor, doc: &helix_view::Document) {
 }
 
 /// Persist thread positions once the edits that moved them are saved.
-pub fn document_saved(editor: &mut Editor) {
-    if editor.review.is_some() {
-        commit(editor);
+///
+/// Viewed marks are reset by changes made outside the editor (for example new commits
+/// pulled from the pull request), not by saving your own edits, so a viewed file stays
+/// viewed when it is saved.
+pub fn document_saved(editor: &mut Editor, path: &Path) {
+    let Some(review) = editor.review.as_deref_mut() else {
+        return;
+    };
+    if let Some(relative) = review.relative_path(path) {
+        if review.is_viewed(&relative) {
+            review.set_viewed(&relative, true);
+        }
     }
+    commit(editor);
 }
 
 /// Update the inline threads of one document.
@@ -1014,7 +1024,27 @@ fn goto_thread(editor: &mut Editor, forward: bool) -> Result<()> {
     open_at(editor, &path, Some(target), Action::Replace)
 }
 
-fn toggle_viewed(editor: &mut Editor) -> Result<()> {
+/// Toggle viewed for the current file. Marking a file with unsaved edits as viewed saves it
+/// first (like `:write`), so "edit, mark viewed, next file" is a single step.
+fn toggle_viewed(cx: &mut compositor::Context) -> Result<()> {
+    let (path, _) = current_location(cx.editor)?;
+    let marking = !session(cx.editor)?.is_viewed(&path);
+    let saved = marking && doc!(cx.editor).is_modified();
+    if saved {
+        super::typed::write_impl(
+            cx,
+            None,
+            super::typed::WriteOptions {
+                force: false,
+                auto_format: true,
+                code_actions: true,
+            },
+        )?;
+    }
+    toggle_viewed_impl(cx.editor, saved)
+}
+
+fn toggle_viewed_impl(editor: &mut Editor, saved: bool) -> Result<()> {
     let (path, _) = current_location(editor)?;
     let review = session_mut(editor)?;
     if review.file(&path).is_none() {
@@ -1036,9 +1066,16 @@ fn toggle_viewed(editor: &mut Editor) -> Result<()> {
         Some(next) => {
             let line = first_change_line(editor, &next);
             open_at(editor, &next, line, Action::Replace)?;
-            editor.set_status(format!("Viewed {count}/{total}; next: {}", next.display()));
+            editor.set_status(format!(
+                "{}Viewed {count}/{total}; next: {}",
+                if saved { "Saved. " } else { "" },
+                next.display()
+            ));
         }
-        None => editor.set_status(format!("All {total} files viewed")),
+        None => editor.set_status(format!(
+            "{}All {total} files viewed",
+            if saved { "Saved. " } else { "" }
+        )),
     }
     Ok(())
 }
@@ -2052,7 +2089,12 @@ pub fn review_toggle_resolved(cx: &mut Context) {
 }
 
 pub fn review_toggle_viewed(cx: &mut Context) {
-    let result = toggle_viewed(cx.editor);
+    let mut ctx = compositor::Context {
+        editor: cx.editor,
+        jobs: cx.jobs,
+        scroll: None,
+    };
+    let result = toggle_viewed(&mut ctx);
     report(cx, result);
 }
 
@@ -2311,7 +2353,7 @@ pub mod typed {
         event: PromptEvent,
     ) -> Result<()> {
         if validate(event) {
-            toggle_viewed(cx.editor)?;
+            toggle_viewed(cx)?;
         }
         Ok(())
     }

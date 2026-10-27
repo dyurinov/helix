@@ -118,7 +118,7 @@
 | `review_edit_comment` | Edit the draft review comment under the cursor | normal: `` <space>ve ``, select: `` <space>ve `` |
 | `review_delete_comment` | Delete the draft review comment under the cursor | normal: `` <space>vd ``, select: `` <space>vd `` |
 | `review_toggle_resolved` | Resolve or unresolve the review thread under the cursor | normal: `` <space>vx ``, select: `` <space>vx `` |
-| `review_toggle_viewed` | Toggle viewed for the current file and go to the next unviewed file | normal: `` <space>vm ``, select: `` <space>vm `` |
+| `review_toggle_viewed` | Mark the current file viewed (saving it) and go to the next unviewed file, or unmark it | normal: `` <space>vm ``, select: `` <space>vm `` |
 | `review_next_file` | Go to the next file in the review | normal: `` <space>vn ``, select: `` <space>vn `` |
 | `review_prev_file` | Go to the previous file in the review | normal: `` <space>vp ``, select: `` <space>vp `` |
 | `goto_next_review_comment` | Goto next review comment | normal: `` ]r ``, select: `` ]r `` |
