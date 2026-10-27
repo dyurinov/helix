@@ -446,7 +446,7 @@ impl EditorView {
             config.end_of_line_diagnostics,
         ));
         if !doc.review_annotations.is_empty() {
-            decorations.add_decoration(text_decorations::ReviewThreads::new(doc, theme, width));
+            decorations.add_decoration(text_decorations::ReviewThreads::new(doc, width));
         }
         render_document(
             surface,

@@ -1,56 +1,16 @@
 use helix_core::doc_formatter::FormattedGrapheme;
 use helix_core::line_ending::line_end_char_index;
 use helix_core::Position;
-use helix_view::review::{annotation_rows, annotations_on_line, Role};
-use helix_view::theme::{Modifier, Style};
-use helix_view::{Document, Theme};
+use helix_view::review::{annotation_rows, annotations_on_line};
+use helix_view::Document;
 
 use crate::ui::document::{LinePos, TextRenderer};
 use crate::ui::text_decorations::Decoration;
-
-struct Styles {
-    frame: Style,
-    author: Style,
-    draft: Style,
-    meta: Style,
-    body: Style,
-    resolved: Style,
-}
-
-impl Styles {
-    fn new(theme: &Theme) -> Self {
-        let get = |scope: &str, fallback: &str| {
-            theme
-                .try_get_exact(scope)
-                .unwrap_or_else(|| theme.get(fallback))
-        };
-        Styles {
-            frame: get("ui.virtual.review.frame", "info"),
-            author: get("ui.virtual.review.author", "info").add_modifier(Modifier::BOLD),
-            draft: get("ui.virtual.review.draft", "warning"),
-            meta: get("ui.virtual.review.meta", "comment"),
-            body: get("ui.virtual.review.body", "ui.text"),
-            resolved: get("ui.virtual.review.resolved", "comment"),
-        }
-    }
-
-    fn get(&self, role: Role) -> Style {
-        match role {
-            Role::Frame => self.frame,
-            Role::Author => self.author,
-            Role::Draft => self.draft,
-            Role::Meta => self.meta,
-            Role::Body => self.body,
-            Role::Resolved => self.resolved,
-        }
-    }
-}
 
 /// Draws review threads in the virtual lines reserved by
 /// [`helix_view::review::ReviewThreadLines`].
 pub struct ReviewThreads<'a> {
     doc: &'a Document,
-    styles: Styles,
     width: usize,
     /// Index of the next annotation whose line end has not been rendered yet.
     next: usize,
@@ -59,10 +19,9 @@ pub struct ReviewThreads<'a> {
 }
 
 impl<'a> ReviewThreads<'a> {
-    pub fn new(doc: &'a Document, theme: &Theme, width: u16) -> Self {
+    pub fn new(doc: &'a Document, width: u16) -> Self {
         ReviewThreads {
             doc,
-            styles: Styles::new(theme),
             width: width as usize,
             next: 0,
             pending: None,
@@ -138,7 +97,7 @@ impl Decoration for ReviewThreads<'_> {
                     && row - renderer.offset.row < renderer.viewport.height as usize;
                 if visible {
                     let mut col = 0usize;
-                    for (segment, role) in layout_row {
+                    for (segment, style) in layout_row {
                         let remaining = self.width.saturating_sub(col);
                         if remaining == 0 {
                             break;
@@ -148,7 +107,7 @@ impl Decoration for ReviewThreads<'_> {
                             row as u16,
                             &segment,
                             remaining,
-                            |_| self.styles.get(role),
+                            |_| style,
                             false,
                             false,
                         );

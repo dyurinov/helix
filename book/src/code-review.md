@@ -60,6 +60,11 @@ with their base version.
 The comment prompt is a single line. Type `\n` for a line break; Markdown, including
 GitHub ` ```suggestion ` blocks, is sent as written.
 
+Inline threads render comments as GitHub flavored Markdown: emphasis, inline code,
+headings, lists and task lists, quotes, tables, and syntax highlighted code blocks.
+Suggestions are highlighted in the commented file's language. Long comments are
+shortened inline; the comment picker (`Space v C`) previews the code they refer to.
+
 ### Submitting
 
 `Space v s` asks whether to **c**omment, **a**pprove or **r**equest changes, then

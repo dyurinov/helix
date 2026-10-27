@@ -602,7 +602,13 @@ fn pull_anchors(editor: &mut Editor) {
     }
 }
 
-fn annotations_for(review: &ReviewSession, relative: &Path, text: &Rope) -> Vec<ReviewAnnotation> {
+fn annotations_for(
+    review: &ReviewSession,
+    relative: &Path,
+    text: &Rope,
+    theme: &helix_view::Theme,
+    loader: &helix_core::syntax::Loader,
+) -> Vec<ReviewAnnotation> {
     // Threads are drawn below the newline ending their line, so the last line of a file
     // without a trailing newline shows its threads below the previous line.
     let last_line = text.len_lines().saturating_sub(2);
@@ -611,6 +617,7 @@ fn annotations_for(review: &ReviewSession, relative: &Path, text: &Rope) -> Vec<
         .map(|thread| ReviewAnnotation {
             char_idx: text.line_to_char((thread.line - 1).min(last_line)),
             thread: Arc::new(thread.clone()),
+            rendered: Arc::new(ui::review_thread::render_thread(thread, theme, loader)),
             // Hidden threads keep following edits.
             hidden: !review.show_inline,
         })
@@ -664,9 +671,12 @@ pub fn sync_document(editor: &mut Editor, doc_id: DocumentId) {
     let Some(doc) = editor.documents.get_mut(&doc_id) else {
         return;
     };
+    let loader = editor.syn_loader.load();
     let annotations = match (editor.review.as_deref(), doc.path()) {
         (Some(review), Some(path)) => match review.relative_path(path) {
-            Some(relative) => annotations_for(review, &relative, doc.text()),
+            Some(relative) => {
+                annotations_for(review, &relative, doc.text(), &editor.theme, &loader)
+            }
             None => Vec::new(),
         },
         _ => Vec::new(),

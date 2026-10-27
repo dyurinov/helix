@@ -13,6 +13,8 @@ use std::{
 use helix_core::{
     text_annotations::LineAnnotation, unicode::width::UnicodeWidthChar, Position, RopeSlice,
 };
+
+use crate::graphics::Style;
 use serde::{Deserialize, Serialize};
 
 use crate::Document;
@@ -659,174 +661,140 @@ pub fn escape_body(body: &str) -> String {
 
 // --- Inline rendering ---------------------------------------------------------------------
 
+/// A thread rendered to styled lines (Markdown is rendered by the caller). Lines are wrapped
+/// to the view width by [`layout_rows`].
+#[derive(Debug, Clone, Default)]
+pub struct RenderedThread {
+    pub frame: Style,
+    pub lines: Vec<RenderedLine>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RenderedLine {
+    pub spans: Vec<(String, Style)>,
+    /// Indentation of wrapped continuation rows, for example to align list items.
+    pub indent: usize,
+}
+
+impl RenderedLine {
+    pub fn new(spans: Vec<(String, Style)>) -> Self {
+        RenderedLine { spans, indent: 0 }
+    }
+}
+
 /// A review thread anchored in a document. `char_idx` is mapped through edits so threads stay
 /// attached to their line while the document changes.
 #[derive(Debug, Clone)]
 pub struct ReviewAnnotation {
     pub char_idx: usize,
     pub thread: Arc<Thread>,
+    pub rendered: Arc<RenderedThread>,
     /// Hidden annotations still follow edits but are not drawn.
     pub hidden: bool,
 }
+
+pub type Row = Vec<(String, Style)>;
+
+const FRAME: &str = "▎ ";
+const MIN_WIDTH: usize = 16;
 
 /// The rows drawn for an annotation.
 pub fn annotation_rows(annotation: &ReviewAnnotation, width: usize) -> Vec<Row> {
     if annotation.hidden {
         Vec::new()
     } else {
-        layout_thread(&annotation.thread, width)
+        layout_rows(&annotation.rendered, width)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Frame,
-    Author,
-    Draft,
-    Meta,
-    Body,
-    Resolved,
-}
-
-pub type Row = Vec<(String, Role)>;
-
-const FRAME: &str = "▎ ";
-const MAX_BODY_ROWS: usize = 12;
-const MIN_WIDTH: usize = 16;
-
-/// Lay out a thread into rows of at most `width` columns.
+/// Wrap a rendered thread into rows of at most `width` columns, each starting with the frame.
 ///
 /// Both the virtual line reservation and the renderer use this function, so the number of
 /// rows always matches what is drawn.
-pub fn layout_thread(thread: &Thread, width: usize) -> Vec<Row> {
+pub fn layout_rows(thread: &RenderedThread, width: usize) -> Vec<Row> {
     if width < MIN_WIDTH {
         return Vec::new();
     }
     let text_width = width - str_width(FRAME);
     let mut rows = Vec::new();
-
-    let first = thread.comments.first();
-    let mut header: Row = vec![(FRAME.to_string(), Role::Frame)];
-    let marker = if thread.resolved { "✓ " } else { "● " };
-    header.push((marker.to_string(), Role::Meta));
-    header.push((
-        first.map_or("comment", |c| c.author.as_str()).to_string(),
-        Role::Author,
-    ));
-    header.push((format!(" · {}", thread.line_label()), Role::Meta));
-    if thread.comments.len() > 1 {
-        header.push((format!(" · {} comments", thread.comments.len()), Role::Meta));
-    }
-    match thread.state_label() {
-        "draft" => header.push((" · draft".to_string(), Role::Draft)),
-        "reply" => header.push((" · draft reply".to_string(), Role::Draft)),
-        "resolved" => header.push((" · resolved".to_string(), Role::Resolved)),
-        "outdated" => header.push((" · outdated".to_string(), Role::Meta)),
-        _ => {}
-    }
-    if thread.on_removed_lines {
-        header.push((" · on removed lines".to_string(), Role::Meta));
-    }
-    rows.push(truncate_row(header, width));
-
-    if thread.resolved {
-        // Resolved threads collapse to their header.
-        return rows;
-    }
-
-    for (i, comment) in thread.comments.iter().enumerate() {
-        let body_role = Role::Body;
-        let mut lines = Vec::new();
-        for line in comment.body.lines() {
-            wrap_line(&line.replace('\t', "    "), text_width, &mut lines);
-        }
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-        if i > 0 {
-            let prefix = format!("↳ {}", comment.author);
-            let mut row: Row = vec![(FRAME.to_string(), Role::Frame), (prefix, Role::Author)];
-            if comment.draft {
-                row.push((" · draft".to_string(), Role::Draft));
-            }
-            rows.push(truncate_row(row, width));
-        }
-        let total = lines.len();
-        for line in lines.into_iter().take(MAX_BODY_ROWS) {
-            rows.push(vec![(FRAME.to_string(), Role::Frame), (line, body_role)]);
-        }
-        if total > MAX_BODY_ROWS {
-            rows.push(vec![
-                (FRAME.to_string(), Role::Frame),
-                (
-                    format!("… {} more lines", total - MAX_BODY_ROWS),
-                    Role::Meta,
-                ),
-            ]);
+    for line in &thread.lines {
+        for mut row in wrap_spans(&line.spans, text_width, line.indent.min(text_width / 2)) {
+            row.insert(0, (FRAME.to_string(), thread.frame));
+            rows.push(row);
         }
     }
     rows
 }
 
-fn str_width(s: &str) -> usize {
+pub fn str_width(s: &str) -> usize {
     s.chars().map(|ch| ch.width().unwrap_or(0)).sum()
 }
 
-fn truncate_row(row: Row, width: usize) -> Row {
+/// Word wrap styled spans to `width` columns. Continuation rows are indented by `indent`
+/// columns and words longer than a row are broken.
+fn wrap_spans(spans: &[(String, Style)], width: usize, indent: usize) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut row: Row = Vec::new();
     let mut used = 0;
-    let mut out = Vec::with_capacity(row.len());
-    for (text, role) in row {
-        let w = str_width(&text);
-        if used + w <= width {
-            used += w;
-            out.push((text, role));
-            continue;
-        }
-        let mut truncated = String::new();
-        for ch in text.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if used + cw + 1 > width {
-                break;
-            }
-            used += cw;
-            truncated.push(ch);
-        }
-        truncated.push('…');
-        out.push((truncated, role));
-        break;
-    }
-    out
-}
+    // Whether `row` has content besides the continuation indent.
+    let mut has_content = false;
 
-/// Word wrap `line` to `width` columns, breaking words longer than a row.
-fn wrap_line(line: &str, width: usize, out: &mut Vec<String>) {
-    let mut current = String::new();
-    let mut current_width = 0;
-    for word in line.split_inclusive(' ') {
-        let word_width = str_width(word);
-        if current_width + word_width > width && !current.is_empty() {
-            out.push(current.trim_end().to_string());
-            current.clear();
-            current_width = 0;
+    fn push(row: &mut Row, text: &str, style: Style) {
+        match row.last_mut() {
+            Some((last, last_style)) if *last_style == style => last.push_str(text),
+            _ => row.push((text.to_string(), style)),
         }
-        if word_width > width {
-            for ch in word.chars() {
-                let cw = ch.width().unwrap_or(0);
-                if current_width + cw > width {
-                    out.push(std::mem::take(&mut current));
-                    current_width = 0;
+    }
+    let new_row = |rows: &mut Vec<Row>, row: &mut Row, used: &mut usize| {
+        if let Some((last, _)) = row.last_mut() {
+            let trimmed = last.trim_end().len();
+            last.truncate(trimmed);
+        }
+        rows.push(std::mem::take(row));
+        if indent > 0 {
+            row.push((" ".repeat(indent), Style::default()));
+        }
+        *used = indent;
+    };
+
+    for (text, style) in spans {
+        let text = text.replace('\t', "    ");
+        for piece in text.split_inclusive(' ') {
+            let piece_width = str_width(piece);
+            // Trailing spaces may overflow; they are trimmed when the row ends.
+            let visible_width = str_width(piece.trim_end());
+            if used + visible_width > width && has_content {
+                new_row(&mut rows, &mut row, &mut used);
+                has_content = false;
+                if piece.trim().is_empty() {
+                    continue;
                 }
-                current.push(ch);
-                current_width += cw;
             }
-        } else {
-            current.push_str(word);
-            current_width += word_width;
+            if used + visible_width <= width {
+                push(&mut row, piece, *style);
+                used += piece_width;
+                has_content = true;
+                continue;
+            }
+            // The piece is longer than a row: break it.
+            for ch in piece.chars() {
+                let ch_width = ch.width().unwrap_or(0);
+                if used + ch_width > width && has_content {
+                    new_row(&mut rows, &mut row, &mut used);
+                }
+                let mut buf = [0; 4];
+                push(&mut row, ch.encode_utf8(&mut buf), *style);
+                used += ch_width;
+                has_content = true;
+            }
         }
     }
-    if !current.is_empty() || out.is_empty() {
-        out.push(current.trim_end().to_string());
+    if let Some((last, _)) = row.last_mut() {
+        let trimmed = last.trim_end().len();
+        last.truncate(trimmed);
     }
+    rows.push(row);
+    rows
 }
 
 /// The range of annotations anchored on `line`. Annotations must be sorted by `char_idx`.
@@ -888,24 +856,12 @@ impl LineAnnotation for ReviewThreadLines<'_> {
 mod tests {
     use super::*;
 
-    fn thread(body: &str) -> Thread {
-        Thread {
-            id: 1,
-            path: "a.rs".into(),
-            start_line: 2,
-            line: 4,
-            resolved: false,
-            outdated: false,
-            on_removed_lines: false,
-            remote: None,
-            comments: vec![Comment {
-                author: "you".into(),
-                body: body.into(),
-                created_at: String::new(),
-                draft: true,
-                uid: new_uid(),
-            }],
-        }
+    fn line(text: &str) -> RenderedLine {
+        RenderedLine::new(vec![(text.to_string(), Style::default())])
+    }
+
+    fn row_width(row: &Row) -> usize {
+        row.iter().map(|(text, _)| str_width(text)).sum()
     }
 
     #[test]
@@ -916,34 +872,46 @@ mod tests {
     }
 
     #[test]
-    fn layout_wraps_and_fits_width() {
-        let rows = layout_thread(&thread("one two three four five six seven eight"), 20);
-        assert!(rows.len() > 2);
+    fn rows_wrap_and_fit_width() {
+        let thread = RenderedThread {
+            frame: Style::default(),
+            lines: vec![
+                line("one two three four five six seven eight"),
+                line(""),
+                line("averyveryveryverylongwordwithoutspaces"),
+            ],
+        };
+        let rows = layout_rows(&thread, 20);
+        assert!(rows.len() > 4);
         for row in &rows {
-            let width: usize = row.iter().map(|(text, _)| str_width(text)).sum();
-            assert!(width <= 20, "{row:?}");
+            assert!(row_width(row) <= 20, "{row:?}");
+            assert_eq!(row[0].0, FRAME);
         }
-        assert!(layout_thread(&thread("x"), 4).is_empty());
+        assert!(layout_rows(&thread, 4).is_empty());
     }
 
     #[test]
-    fn resolved_threads_collapse() {
-        let mut t = thread("line\nline\nline");
-        t.resolved = true;
-        t.remote = Some(RemoteThread {
-            node_id: "x".into(),
-            reply_to: 1,
-        });
-        assert_eq!(layout_thread(&t, 80).len(), 1);
+    fn continuation_rows_are_indented() {
+        let mut item = line("• alpha beta gamma delta epsilon");
+        item.indent = 2;
+        let thread = RenderedThread {
+            frame: Style::default(),
+            lines: vec![item],
+        };
+        let rows = layout_rows(&thread, 18);
+        assert!(rows.len() > 1);
+        let continuation: String = rows[1].iter().skip(1).map(|(t, _)| t.as_str()).collect();
+        assert!(continuation.starts_with("  ") && !continuation.starts_with("   "));
     }
 
     #[test]
-    fn long_bodies_are_capped() {
-        let body = (0..40)
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let rows = layout_thread(&thread(&body), 80);
-        assert_eq!(rows.len(), 1 + MAX_BODY_ROWS + 1);
+    fn preserves_leading_whitespace() {
+        let thread = RenderedThread {
+            frame: Style::default(),
+            lines: vec![line("    indented code")],
+        };
+        let rows = layout_rows(&thread, 40);
+        let text: String = rows[0].iter().skip(1).map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "    indented code");
     }
 }

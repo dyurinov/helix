@@ -129,7 +129,7 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     // Comment on line 2.
     run_until(
         &mut app,
-        "<esc>ggjx:review-comment needs a test\\nplease<ret>",
+        "<esc>ggjx:review-comment **needs** a `test`\\n- please<ret>",
         |app| {
             app.editor
                 .review
@@ -142,7 +142,7 @@ async fn review_lifecycle() -> anyhow::Result<()> {
         let review = app.editor.review.as_deref().unwrap();
         let thread = &review.threads[0];
         assert_eq!((thread.start_line, thread.line), (2, 2));
-        assert_eq!(thread.comments[0].body, "needs a test\nplease");
+        assert_eq!(thread.comments[0].body, "**needs** a `test`\n- please");
         assert_eq!(doc!(app.editor).review_annotations.len(), 1);
         assert!(review.state_file.exists());
     }
@@ -159,8 +159,10 @@ async fn review_lifecycle() -> anyhow::Result<()> {
         "{screen}"
     );
     assert!(lines[anchor + 2].contains("▎ needs a test"), "{screen}");
-    assert!(lines[anchor + 3].contains("▎ please"), "{screen}");
-    assert!(lines[anchor + 4].contains("three"), "{screen}");
+    // Markdown is rendered, with a blank row between blocks.
+    assert_eq!(lines[anchor + 3].trim(), "▎", "{screen}");
+    assert!(lines[anchor + 4].contains("▎ • please"), "{screen}");
+    assert!(lines[anchor + 5].contains("three"), "{screen}");
     eprintln!("{}", lines[..anchor + 6].join("\n"));
 
     // Threads follow edits above them, even while they are hidden.
@@ -181,7 +183,7 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     let markdown = std::fs::read_to_string(&export)?;
     assert!(markdown.contains("### L3 (draft)"), "{markdown}");
     assert!(markdown.contains("TWO"), "{markdown}");
-    assert!(markdown.contains("needs a test\nplease"), "{markdown}");
+    assert!(markdown.contains("**needs** a `test`\n- please"), "{markdown}");
 
     // ]r jumps to the next comment.
     run_until(&mut app, "gg]r", |app| {
