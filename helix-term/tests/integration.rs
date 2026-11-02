@@ -20,5 +20,6 @@ mod test {
     mod commands;
     mod markdown_reading;
     mod movement;
+    mod review;
     mod splits;
 }

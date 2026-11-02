@@ -233,6 +233,8 @@ pub struct Document {
 
     /// Annotations for LSP document color swatches
     pub color_swatches: Option<DocumentColorSwatches>,
+    /// Code review threads drawn below their lines, sorted by `char_idx`.
+    pub review_annotations: Vec<crate::review::ReviewAnnotation>,
     /// Cached LSP document links for navigation (e.g. goto_file).
     pub document_links: Vec<DocumentLink>,
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
@@ -788,6 +790,7 @@ impl Document {
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
+            review_annotations: Vec::new(),
             document_links: Vec::new(),
             color_swatch_controller: TaskController::new(),
             document_highlight_controllers: HashMap::new(),
@@ -1594,6 +1597,13 @@ impl Document {
                 diagnostic.provider.clone(),
             )
         });
+
+        // Keep review threads attached to their lines.
+        changes.update_positions(
+            self.review_annotations
+                .iter_mut()
+                .map(|annotation| (&mut annotation.char_idx, Assoc::After)),
+        );
 
         // Update the inlay hint annotations' positions, helping ensure they are displayed in the proper place
         let apply_inlay_hint_changes = |annotations: &mut Vec<InlineAnnotation>| {

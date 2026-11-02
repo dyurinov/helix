@@ -377,7 +377,7 @@ fn buffer_previous(
     Ok(())
 }
 
-fn write_impl(
+pub(super) fn write_impl(
     cx: &mut compositor::Context,
     path: Option<&str>,
     options: WriteOptions,
@@ -4176,6 +4176,180 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: run_shell_command,
         completer: SHELL_COMPLETER,
         signature: SHELL_SIGNATURE,
+    },
+    TypableCommand {
+        name: "review",
+        aliases: &["rv"],
+        doc: "Start reviewing the current branch against a base revision (default: the pull request base or the remote default branch). Diffs, viewed files and comments follow the review until :review-close.",
+        fun: super::review::typed::review,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-pr",
+        aliases: &[],
+        doc: "Check out a GitHub pull request (number, URL or branch) with `gh` and review it.",
+        fun: super::review::typed::review_pr,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            flags: &[Flag {
+                name: "no-checkout",
+                doc: "review the pull request without checking it out",
+                ..Flag::DEFAULT
+            }],
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-close",
+        aliases: &[],
+        doc: "Close the review. Draft comments are kept for the next review of this branch.",
+        fun: super::review::typed::review_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-refresh",
+        aliases: &[],
+        doc: "Reload the review's changed files and GitHub threads.",
+        fun: super::review::typed::review_refresh,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-files",
+        aliases: &[],
+        doc: "Open the review file picker.",
+        fun: super::review::typed::review_files,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-comments",
+        aliases: &[],
+        doc: "Open the review comment picker.",
+        fun: super::review::typed::review_comments,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-comment",
+        aliases: &[],
+        doc: "Add a draft review comment on the selected lines. Use \\n for line breaks.",
+        fun: super::review::typed::review_comment,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            raw_after: Some(0),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-reply",
+        aliases: &[],
+        doc: "Add a draft reply to the review thread under the cursor.",
+        fun: super::review::typed::review_reply,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            raw_after: Some(0),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-edit",
+        aliases: &[],
+        doc: "Replace the draft comment under the cursor.",
+        fun: super::review::typed::review_edit,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            raw_after: Some(0),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-delete",
+        aliases: &[],
+        doc: "Delete the draft comment under the cursor.",
+        fun: super::review::typed::review_delete,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-resolve",
+        aliases: &[],
+        doc: "Resolve or unresolve the GitHub review thread under the cursor.",
+        fun: super::review::typed::review_resolve,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-viewed",
+        aliases: &[],
+        doc: "Mark the current file viewed (saving unsaved edits) and go to the next unviewed file, or unmark it.",
+        fun: super::review::typed::review_viewed,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-export",
+        aliases: &[],
+        doc: "Copy all unresolved review comments as Markdown to the clipboard, or write them to a file.",
+        fun: super::review::typed::review_export,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-submit",
+        aliases: &[],
+        doc: "Submit draft comments and replies to the pull request: `comment` (default), `approve` or `request-changes`, followed by an optional message.",
+        fun: super::review::typed::review_submit,
+        completer: CommandCompleter::positional(&[completers::review_event]),
+        signature: Signature {
+            positionals: (0, Some(2)),
+            raw_after: Some(1),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "review-info",
+        aliases: &[],
+        doc: "Show the review summary, pull request description and review keys.",
+        fun: super::review::typed::review_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
     },
     TypableCommand {
         name: "write-and-run",

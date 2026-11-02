@@ -5,6 +5,7 @@ use crate::{
     editor::{GutterConfig, GutterType},
     graphics::Rect,
     handlers::diagnostics::DiagnosticsHandler,
+    review::ReviewThreadLines,
     Align, Document, DocumentId, Theme, ViewId,
 };
 
@@ -526,6 +527,10 @@ impl View {
                 doc.view_offset(self.id).horizontal_offset,
                 config,
             ));
+        }
+
+        if !doc.review_annotations.is_empty() {
+            text_annotations.add_line_annotation(ReviewThreadLines::new(doc, width));
         }
 
         text_annotations

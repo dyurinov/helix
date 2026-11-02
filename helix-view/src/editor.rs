@@ -697,6 +697,7 @@ impl Default for StatusLineConfig {
                 E::FileName,
                 E::ReadOnlyIndicator,
                 E::FileModificationIndicator,
+                E::Review,
             ],
             center: vec![],
             right: vec![
@@ -806,6 +807,9 @@ pub enum StatusLineElement {
 
     /// Indicator for when code actions are available
     CodeActionHint,
+
+    /// Code review progress, shown while a review is active
+    Review,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -1294,6 +1298,8 @@ pub struct Editor {
     pub language_servers: helix_lsp::Registry,
     pub diagnostics: Diagnostics,
     pub diff_providers: DiffProviderRegistry,
+    /// The active code review, if any.
+    pub review: Option<Box<crate::review::ReviewSession>>,
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
@@ -1444,6 +1450,7 @@ impl Editor {
             language_servers,
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
+            review: None,
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
             syn_loader,
