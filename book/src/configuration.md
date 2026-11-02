@@ -45,7 +45,8 @@ Press `q`, Escape, or `Space m` to reveal the source without jumping. After
 scrolling or navigating, the source opens at the section being read. Use `[`/`]`
 to move between headings, `/` to search, `n`/`N` for next/previous matches, and
 `?` to show the controls. Comments are hidden, prose reflows, and fenced code,
-tables, task lists, and emphasis are rendered. The preview includes unsaved edits.
+tables, task lists, and emphasis are rendered, and ` ```mermaid ` blocks are drawn
+as [diagrams](./code-review.md#mermaid-diagrams). The preview includes unsaved edits.
 
 ```toml
 [keys.normal.space]

@@ -674,11 +674,17 @@ pub struct RenderedLine {
     pub spans: Vec<(String, Style)>,
     /// Indentation of wrapped continuation rows, for example to align list items.
     pub indent: usize,
+    /// Clip the line instead of wrapping it, for diagrams.
+    pub nowrap: bool,
 }
 
 impl RenderedLine {
     pub fn new(spans: Vec<(String, Style)>) -> Self {
-        RenderedLine { spans, indent: 0 }
+        RenderedLine {
+            spans,
+            indent: 0,
+            nowrap: false,
+        }
     }
 }
 
@@ -718,7 +724,12 @@ pub fn layout_rows(thread: &RenderedThread, width: usize) -> Vec<Row> {
     let text_width = width - str_width(FRAME);
     let mut rows = Vec::new();
     for line in &thread.lines {
-        for mut row in wrap_spans(&line.spans, text_width, line.indent.min(text_width / 2)) {
+        let wrapped = if line.nowrap {
+            vec![clip_spans(&line.spans, text_width)]
+        } else {
+            wrap_spans(&line.spans, text_width, line.indent.min(text_width / 2))
+        };
+        for mut row in wrapped {
             row.insert(0, (FRAME.to_string(), thread.frame));
             rows.push(row);
         }
@@ -728,6 +739,29 @@ pub fn layout_rows(thread: &RenderedThread, width: usize) -> Vec<Row> {
 
 pub fn str_width(s: &str) -> usize {
     s.chars().map(|ch| ch.width().unwrap_or(0)).sum()
+}
+
+/// Cut styled spans off at `width` columns.
+fn clip_spans(spans: &[(String, Style)], width: usize) -> Row {
+    let mut row = Row::new();
+    let mut used = 0;
+    for (text, style) in spans {
+        let mut clipped = String::new();
+        for ch in text.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if used + ch_width > width {
+                break;
+            }
+            used += ch_width;
+            clipped.push(ch);
+        }
+        let full = clipped.len() == text.len();
+        row.push((clipped, *style));
+        if !full {
+            break;
+        }
+    }
+    row
 }
 
 /// Word wrap styled spans to `width` columns. Continuation rows are indented by `indent`
@@ -862,6 +896,20 @@ mod tests {
 
     fn row_width(row: &Row) -> usize {
         row.iter().map(|(text, _)| str_width(text)).sum()
+    }
+
+    #[test]
+    fn diagram_lines_are_clipped_not_wrapped() {
+        let thread = RenderedThread {
+            frame: Style::default(),
+            lines: vec![RenderedLine {
+                nowrap: true,
+                ..line("┌──────┐ ┌──────┐ ┌──────┐")
+            }],
+        };
+        let rows = layout_rows(&thread, 20);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(row_width(&rows[0]), 20);
     }
 
     #[test]

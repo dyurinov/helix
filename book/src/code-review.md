@@ -62,7 +62,8 @@ GitHub ` ```suggestion ` blocks, is sent as written.
 
 Inline threads render comments as GitHub flavored Markdown: emphasis, inline code,
 headings, lists and task lists, quotes, tables, and syntax highlighted code blocks.
-Suggestions are highlighted in the commented file's language. Long comments are
+Suggestions are highlighted in the commented file's language. ` ```mermaid ` blocks are
+drawn as diagrams (see [Mermaid diagrams](#mermaid-diagrams)). Long comments are
 shortened inline; the comment picker (`Space v C`) previews the code they refer to.
 
 ### Submitting
@@ -85,10 +86,37 @@ Without a pull request, `Space v y` (or `:review-export [file]`) copies all comm
 as Markdown, including the code they refer to, for pasting into a pull request,
 an issue or a chat.
 
+### Mermaid diagrams
+
+Comments, and the [Markdown reading mode](./configuration.md#markdown-reading-mode-local-build),
+draw ` ```mermaid ` blocks with box drawing characters:
+
+```
+┌───────┐       ╭───────────╮
+│ Start ├─ go ─►│ Next step │
+└───────┘       ╰───────────╯
+```
+
+| Diagram | Notes |
+| --- | --- |
+| `flowchart` / `graph` | All directions, node shapes, labels, `&`, chained, dotted, thick and longer links. Subgraphs are not outlined; links to a subgraph point to a node named after it. Self loops are not drawn. |
+| `sequenceDiagram` | Participants, actors, all message arrows, self messages, notes, `autonumber`, and `loop`/`alt`/`opt`/`par`/`critical`/`break` blocks. |
+| `stateDiagram-v2` | States, start and end points, transitions with labels, descriptions, choice, fork and join. Composite states are flattened. |
+| `classDiagram` | Classes with annotations, attributes and methods, relationships with cardinality and labels. |
+| `erDiagram` | Entities with attributes, relationships with cardinality. |
+| `pie` | Drawn as a bar chart with percentages. |
+| `mindmap` | Drawn as a tree. |
+
+Horizontal diagrams that do not fit are drawn top to bottom, and wider ones are cut off
+at the edge of the view. Other diagram types, and diagrams that cannot be read, are shown
+as source code.
+
 ### Theming
 
 Inline threads use `ui.virtual.review.frame`, `ui.virtual.review.author`,
 `ui.virtual.review.body`, `ui.virtual.review.meta`, `ui.virtual.review.draft` and
 `ui.virtual.review.resolved`, falling back to `info`, `ui.text`, `comment` and
 `warning`. The statusline element is styled with `ui.statusline.review`, falling
-back to `info`.
+back to `info`. Diagrams use `markup.diagram.border`, `.text`, `.title`, `.edge`, `.arrow`,
+`.label` and `.muted`, falling back to `type`, `ui.text`, `markup.heading.1`,
+`punctuation`, `operator`, `string` and `comment`.

@@ -11,9 +11,14 @@ use helix_view::{
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::ui::markdown::highlighted_code_block;
+use crate::ui::mermaid;
 
-/// Rendered lines shown per comment before the rest is elided.
+/// Rendered lines shown per comment before the rest is elided. Diagram rows do not count.
 const MAX_COMMENT_LINES: usize = 40;
+/// Rendered lines shown per comment including diagrams.
+const MAX_TOTAL_LINES: usize = 150;
+/// Diagrams are laid out for this width; wider ones are clipped to the view.
+const DIAGRAM_WIDTH: usize = 100;
 
 struct Styles {
     frame: Style,
@@ -110,9 +115,14 @@ pub fn render_thread(thread: &Thread, theme: &Theme, loader: &syntax::Loader) ->
                 lines.push(RenderedLine::new(reply));
             }
             let mut body = render_markdown(&comment.body, &styles, theme, loader, language);
-            if body.len() > MAX_COMMENT_LINES {
-                let more = body.len() - MAX_COMMENT_LINES;
-                body.truncate(MAX_COMMENT_LINES);
+            let mut text_lines = 0;
+            let cut = body.iter().enumerate().position(|(index, line)| {
+                text_lines += usize::from(!line.nowrap);
+                text_lines > MAX_COMMENT_LINES || index >= MAX_TOTAL_LINES
+            });
+            if let Some(cut) = cut {
+                let more = body.len() - cut;
+                body.truncate(cut);
                 body.push(RenderedLine::new(vec![(
                     format!("… {more} more lines"),
                     styles.meta,
@@ -181,6 +191,10 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn flush(&mut self) {
+        self.push_line(false);
+    }
+
+    fn push_line(&mut self, nowrap: bool) {
         if self.spans.is_empty() {
             return;
         }
@@ -188,6 +202,7 @@ impl<'a> MarkdownRenderer<'a> {
         self.lines.push(RenderedLine {
             spans,
             indent: self.prefix_width,
+            nowrap,
         });
     }
 
@@ -201,7 +216,35 @@ impl<'a> MarkdownRenderer<'a> {
         self.spans.push((text.to_string(), style));
     }
 
+    /// Draw a Mermaid diagram, returning false if it cannot be rendered.
+    fn diagram(&mut self, source: &str) -> bool {
+        let Some(diagram) = mermaid::render(source, DIAGRAM_WIDTH) else {
+            return false;
+        };
+        for row in diagram {
+            self.ensure_line();
+            let prefix = self.spans.len();
+            self.spans.extend(
+                row.into_iter()
+                    .map(|(text, role)| (text, role.style(self.theme))),
+            );
+            if self.spans.len() == prefix {
+                // Keep empty rows.
+                self.spans.push((String::new(), self.styles.text));
+            }
+            self.push_line(true);
+        }
+        true
+    }
+
     fn code_block(&mut self, language: &str, code: &str) {
+        let info = language
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if info == "mermaid" && self.diagram(code) {
+            return;
+        }
         let language = if language == "suggestion" {
             self.ensure_line();
             self.spans
@@ -522,6 +565,43 @@ mod tests {
             render("```suggestion\nlet x = 2;\n```"),
             ["Suggested change:", "let x = 2;"]
         );
+    }
+
+    #[test]
+    fn renders_mermaid_diagrams() {
+        let lines = render("see\n```mermaid\ngraph LR\nA --> B\n```\nafter");
+        assert_eq!(
+            lines,
+            [
+                "see",
+                "",
+                "┌───┐  ┌───┐",
+                "│ A ├─►│ B │",
+                "└───┘  └───┘",
+                "",
+                "after"
+            ]
+        );
+        // Unsupported diagrams are shown as code.
+        assert_eq!(
+            render("```mermaid\ngantt\n  title Plan\n```"),
+            ["gantt", "  title Plan"]
+        );
+    }
+
+    #[test]
+    fn diagram_rows_do_not_wrap_or_count_towards_the_limit() {
+        let theme = Theme::default();
+        let loader = empty_loader();
+        let styles = Styles::new(&theme);
+        let lines = render_markdown(
+            "```mermaid\ngraph TD\nA-->B\n```",
+            &styles,
+            &theme,
+            &loader,
+            "",
+        );
+        assert!(lines.iter().all(|line| line.nowrap));
     }
 
     #[test]

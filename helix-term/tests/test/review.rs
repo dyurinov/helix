@@ -183,7 +183,10 @@ async fn review_lifecycle() -> anyhow::Result<()> {
     let markdown = std::fs::read_to_string(&export)?;
     assert!(markdown.contains("### L3 (draft)"), "{markdown}");
     assert!(markdown.contains("TWO"), "{markdown}");
-    assert!(markdown.contains("**needs** a `test`\n- please"), "{markdown}");
+    assert!(
+        markdown.contains("**needs** a `test`\n- please"),
+        "{markdown}"
+    );
 
     // ]r jumps to the next comment.
     run_until(&mut app, "gg]r", |app| {
