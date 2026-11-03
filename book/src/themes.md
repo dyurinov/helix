@@ -276,6 +276,8 @@ See also [#2380]
   - `raw`
     - `inline`
     - `block`
+  - `diagram` - [Mermaid diagrams](./configuration.md#mermaid-diagrams) in Markdown views
+    - `border`, `text`, `title`, `edge`, `arrow`, `label`, `muted`
 
 - `diff` - version control changes
   - `plus` - additions

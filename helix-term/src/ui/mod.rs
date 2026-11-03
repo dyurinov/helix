@@ -6,6 +6,7 @@ pub mod lsp;
 mod markdown;
 mod markdown_reader;
 pub mod menu;
+pub mod mermaid;
 pub mod overlay;
 pub mod picker;
 pub mod popup;

@@ -246,6 +246,8 @@ struct Builder<'a> {
     lists: Vec<Option<u64>>,
     quote_depth: usize,
     code: Option<String>,
+    /// Source and offset of a Mermaid block, rendered when it ends.
+    diagram: Option<(String, usize)>,
     comment: bool,
     table: Option<Vec<Vec<String>>>,
     row: Vec<String>,
@@ -277,6 +279,40 @@ impl Builder<'_> {
             self.sources.push(self.source);
         }
     }
+    fn code(&mut self, text: &str, language: &str, offset: usize, loader: &syntax::Loader) {
+        let code =
+            super::markdown::highlighted_code_block(text, language, Some(self.theme), loader, None);
+        let mut offset = offset;
+        for (line, raw) in code.lines.into_iter().zip(text.split('\n')) {
+            self.source = offset;
+            self.push("  ", self.theme.get("markup.raw.block"));
+            self.spans.extend(
+                line.0
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.into_owned(), span.style)),
+            );
+            self.flush();
+            offset += raw.len() + 1;
+        }
+    }
+
+    /// Draw a Mermaid diagram, or show its source if it cannot be rendered.
+    fn diagram(&mut self, source: &str, offset: usize, loader: &syntax::Loader) {
+        let available = usize::from(self.width).saturating_sub(2);
+        let Some(rows) = super::mermaid::render(source, available) else {
+            self.code(source.trim_end_matches('\n'), "mermaid", offset, loader);
+            return;
+        };
+        self.source = offset;
+        for row in rows {
+            self.push("  ", self.theme.get("ui.text"));
+            for (text, role) in super::mermaid::clip(row, available) {
+                self.push(text, role.style(self.theme));
+            }
+            self.flush();
+        }
+    }
+
     fn html(&mut self, raw: &str) {
         let mut remaining = raw;
         while !remaining.is_empty() {
@@ -410,6 +446,7 @@ fn render_markdown(source: &str, theme: &Theme, loader: &syntax::Loader, width: 
         lists: vec![],
         quote_depth: 0,
         code: None,
+        diagram: None,
         comment: false,
         table: None,
         row: vec![],
@@ -474,6 +511,9 @@ fn render_markdown(source: &str, theme: &Theme, loader: &syntax::Loader, width: 
                             _ => "",
                         };
                         out.code = Some(language.to_owned());
+                        if language == "mermaid" {
+                            out.diagram = Some((String::new(), range.start));
+                        }
                         if !language.is_empty() {
                             out.push(format!("  {language}"), theme.get("ui.text.inactive"));
                             out.flush();
@@ -518,6 +558,9 @@ fn render_markdown(source: &str, theme: &Theme, loader: &syntax::Loader, width: 
                         }
                     }
                     TagEnd::CodeBlock => {
+                        if let Some((source, offset)) = out.diagram.take() {
+                            out.diagram(&source, offset, loader);
+                        }
                         out.code = None;
                         out.blank();
                     }
@@ -544,26 +587,10 @@ fn render_markdown(source: &str, theme: &Theme, loader: &syntax::Loader, width: 
                 out.styles.pop();
             }
             Event::Text(text) => {
-                if let Some(language) = &out.code {
-                    let code = super::markdown::highlighted_code_block(
-                        &text,
-                        language,
-                        Some(theme),
-                        loader,
-                        None,
-                    );
-                    let mut offset = range.start;
-                    for (line, raw) in code.lines.into_iter().zip(text.split('\n')) {
-                        out.source = offset;
-                        out.push("  ", theme.get("markup.raw.block"));
-                        out.spans.extend(
-                            line.0
-                                .into_iter()
-                                .map(|span| Span::styled(span.content.into_owned(), span.style)),
-                        );
-                        out.flush();
-                        offset += raw.len() + 1;
-                    }
+                if let Some((source, _)) = &mut out.diagram {
+                    source.push_str(&text);
+                } else if let Some(language) = out.code.clone() {
+                    out.code(&text, &language, range.start, loader);
                 } else {
                     out.push(text.into_string(), out.style());
                 }
@@ -660,6 +687,28 @@ mod tests {
         assert!(text.contains('│'));
         assert!(!text.contains("| ---"));
     }
+    #[test]
+    fn mermaid_blocks_render_as_diagrams() {
+        let source = "# Flow\n\n```mermaid\ngraph LR\nA --> B\n```\n\n```mermaid\ngantt\n```\n";
+        let result = render(source);
+        let text = plain(&result);
+        assert!(text.contains("  │ A ├─►│ B │"), "{text}");
+        assert!(!text.contains("graph LR"), "{text}");
+        // Unsupported diagrams show their source.
+        assert!(text.contains("gantt"), "{text}");
+        let diagram = source.find("```mermaid").unwrap();
+        let row = result
+            .text
+            .lines
+            .iter()
+            .position(|line| {
+                let text: String = line.0.iter().map(|span| span.content.as_ref()).collect();
+                text.contains("A ├")
+            })
+            .unwrap();
+        assert_eq!(result.sources[row], diagram);
+    }
+
     #[test]
     fn source_mapping_skips_comments_and_tracks_sections() {
         let source = "<!-- hidden -->\n# First\n\nText.\n\n## Second\n\nMore.\n";
