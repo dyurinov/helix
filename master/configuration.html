@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-62015950.js";
+            window.path_to_searchindex_js = "searchindex-6f6df81a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -222,12 +222,41 @@ Press <code>q</code>, Escape, or <code>Space m</code> to reveal the source witho
 scrolling or navigating, the source opens at the section being read. Use <code>[</code>/<code>]</code>
 to move between headings, <code>/</code> to search, <code>n</code>/<code>N</code> for next/previous matches, and
 <code>?</code> to show the controls. Comments are hidden, prose reflows, and fenced code,
-tables, task lists, and emphasis are rendered. The preview includes unsaved edits.</p>
+tables, task lists, and emphasis are rendered, and <code>```mermaid</code> blocks are drawn
+as <a href="#mermaid-diagrams">diagrams</a>. The preview includes unsaved edits.</p>
 <pre><code class="language-toml">[keys.normal.space]
 m = "markdown_reading_mode"
 </code></pre>
 <p>Automatic preview is off by default. Set <code>editor.markdown-reading-mode = true</code>
 only if you want newly opened Markdown files to start in preview.</p>
+<h3 id="mermaid-diagrams"><a class="header" href="#mermaid-diagrams">Mermaid diagrams</a></h3>
+<p>The reading mode draws <code>```mermaid</code> blocks with box drawing characters:</p>
+<pre><code>┌───────┐       ╭───────────╮
+│ Start ├─ go ─►│ Next step │
+└───────┘       ╰───────────╯
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Diagram</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>flowchart</code> / <code>graph</code></td><td>All directions, node shapes, labels, <code>&amp;</code>, chained, dotted, thick and longer links. Subgraphs are not outlined; links to a subgraph point to a node named after it. Self loops are not drawn.</td></tr>
+<tr><td><code>sequenceDiagram</code></td><td>Participants, actors, all message arrows, self messages, notes, <code>autonumber</code>, and <code>loop</code>/<code>alt</code>/<code>opt</code>/<code>par</code>/<code>critical</code>/<code>break</code> blocks.</td></tr>
+<tr><td><code>stateDiagram-v2</code></td><td>States, start and end points, transitions with labels, descriptions, choice, fork and join. Composite states are flattened.</td></tr>
+<tr><td><code>classDiagram</code></td><td>Classes with annotations, attributes and methods, relationships with cardinality and labels.</td></tr>
+<tr><td><code>erDiagram</code></td><td>Entities with attributes, relationships with cardinality.</td></tr>
+<tr><td><code>pie</code></td><td>Drawn as a bar chart with percentages.</td></tr>
+<tr><td><code>mindmap</code></td><td>Drawn as a tree.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Horizontal diagrams that do not fit are drawn top to bottom, and wider ones are cut off
+at the edge of the view. Other diagram types, and diagrams that cannot be read, are shown
+as source code.</p>
+<p>Diagrams use <code>markup.diagram.border</code>, <code>.text</code>, <code>.title</code>, <code>.edge</code>, <code>.arrow</code>, <code>.label</code> and
+<code>.muted</code>, falling back to <code>type</code>, <code>ui.text</code>, <code>markup.heading.1</code>, <code>punctuation</code>,
+<code>operator</code>, <code>string</code> and <code>comment</code>.</p>
 
                     </main>
 
